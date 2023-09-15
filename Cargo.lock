@@ -376,6 +376,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd7cc57abe963c6d3b9d8be5b06ba7c8957a930305ca90304f24ef040aa6f961"
 
 [[package]]
+name = "cmake"
+version = "0.1.50"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a31c789563b815f77f4250caee12365734369f942439b7defd71e18a48197130"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -789,6 +798,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6fb8d784f27acf97159b40fc4db5ecd8aa23b9ad5ef69cdd136d3bc80665f0c0"
 
 [[package]]
+name = "glob"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2fabcfbdc87f4758337ca535fb41a6d701b65693ce38287d856d1674551ec9b"
+
+[[package]]
 name = "gloo-timers"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1036,6 +1051,17 @@ name = "libhdr"
 version = "0.1.2"
 source = "registry+ssh://bitbucket.org/rin-rs/rin-registry.git"
 checksum = "f23bd9e2788ff5418911f542188484393cc38c11462b2a4980eaf45d2a08ff7d"
+
+[[package]]
+name = "libktx-rs-sys"
+version = "0.3.3+v4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e31f79d7157896e5b3140fc210bfcb033a8271d0d6af32e0e4fcc7761d10cb32"
+dependencies = [
+ "cmake",
+ "glob",
+ "log",
+]
 
 [[package]]
 name = "libloading"
@@ -1517,6 +1543,7 @@ dependencies = [
  "futures-intrusive",
  "image",
  "libhdr",
+ "libktx-rs-sys",
  "wgpu",
 ]
 

@@ -1,4 +1,5 @@
 /target
 *.png
 *.dds
+*.ktx
 test-assets/*

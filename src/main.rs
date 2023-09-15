@@ -1,5 +1,7 @@
-use std::{borrow::Cow, error::Error, mem::size_of};
+use std::{borrow::Cow, error::Error, mem::size_of, sync::{Arc, Mutex}, ptr, ffi::{CStr, CString}};
 use image::{DynamicImage, ImageBuffer, Rgb};
+// use libktx_rs::{sources::{Ktx1CreateInfo, CommonCreateInfo, StreamSource}, RustKtxStream, TextureCreateFlags};
+use libktx_rs_sys::{ktxTexture2_Create, ktxTextureCreateStorageEnum_KTX_TEXTURE_CREATE_ALLOC_STORAGE, ktxTexture1_CreateFromMemory, ktxTextureCreateFlagBits_KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, ktxTexture1_WriteKTX2ToMemory, ktxTexture1_WriteKTX2ToNamedFile, ktxTexture2_CreateFromMemory};
 use wgpu::{util::DeviceExt, TextureDescriptor, TextureFormat, TextureUsages, Origin3d, ImageDataLayout};
 use async_std::{prelude::*, fs::File, task::spawn_blocking, path::Path};
 
@@ -7,7 +9,7 @@ async fn equirectangular_to_cubemap(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     env_map: &DynamicImage,
-    cubemap_side: u32,
+    cube_map_side: u32,
 ) -> Option<wgpu::Texture> {
     // Loads the shader from WGSL
     let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -40,7 +42,7 @@ async fn equirectangular_to_cubemap(
     let cube_map = device.create_texture(
         &TextureDescriptor {
             label: Some("Cubemap"),
-            size: wgpu::Extent3d{ width: cubemap_side, height: cubemap_side, depth_or_array_layers: 6},
+            size: wgpu::Extent3d{ width: cube_map_side, height: cube_map_side, depth_or_array_layers: 6},
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -130,7 +132,7 @@ async fn equirectangular_to_cubemap(
         cpass.set_pipeline(&compute_pipeline);
         cpass.set_bind_group(0, &bind_group, &[]);
         cpass.insert_debug_marker("Compute equirectangular to cubemap");
-        cpass.dispatch_workgroups(cubemap_side, cubemap_side, 6); // Number of cells to run, the (x,y,z) size of item being processed
+        cpass.dispatch_workgroups(cube_map_side, cube_map_side, 6); // Number of cells to run, the (x,y,z) size of item being processed
     }
 
     // Submits command encoder for processing
@@ -146,14 +148,14 @@ async fn download_cubemap(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     cube_map: &wgpu::Texture,
-    cubemap_side: u32
+    cube_map_side: u32
 ) -> Option<Vec<f32>>
 {
 
     // Will copy data from texture on GPU to staging buffer on CPU.
     let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: cubemap_side as u64 * cubemap_side as u64 * 6 * 4 * size_of::<f32>() as u64,
+        size: cube_map_side as u64 * cube_map_side as u64 * 6 * 4 * size_of::<f32>() as u64,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -171,11 +173,11 @@ async fn download_cubemap(
             buffer: &staging_buffer,
             layout: ImageDataLayout{
                 offset: 0,
-                bytes_per_row: Some(cubemap_side * 4 * size_of::<f32>() as u32),
-                rows_per_image: Some(cubemap_side),
+                bytes_per_row: Some(cube_map_side * 4 * size_of::<f32>() as u32),
+                rows_per_image: Some(cube_map_side),
             }
         },
-        wgpu::Extent3d { width: cubemap_side, height: cubemap_side, depth_or_array_layers: 6 }
+        wgpu::Extent3d { width: cube_map_side, height: cube_map_side, depth_or_array_layers: 6 }
     );
 
     // Submits command encoder for processing
@@ -215,6 +217,40 @@ async fn download_cubemap(
     }
 }
 
+fn write_cubemap_to_ktx(cube_map_data: &[f32], cube_map_side: u32, output_file: &str) {
+    const GL_RGBA32F: u32 = 0x8814;
+    const VK_FORMAT_R32G32B32A32_SFLOAT: u32 = 109;
+    let mut create_info = libktx_rs_sys::ktxTextureCreateInfo {
+        baseWidth: cube_map_side,
+        baseHeight: cube_map_side,
+        baseDepth: 1,
+        numDimensions: 2,
+        numLevels: 1,
+        numLayers: 1,
+        numFaces: 6,
+        generateMipmaps: true,
+        glInternalformat: GL_RGBA32F,
+        vkFormat: VK_FORMAT_R32G32B32A32_SFLOAT,
+        isArray: false,
+        pDfd: ptr::null_mut(),
+    };
+    let mut texture = ptr::null_mut();
+    unsafe{
+        ktxTexture2_Create(&mut create_info, ktxTextureCreateStorageEnum_KTX_TEXTURE_CREATE_ALLOC_STORAGE, &mut texture);
+        let name = CString::new(output_file).unwrap();
+        let vtbl = &*(*texture).vtbl;
+        let face_size = cube_map_side as usize * cube_map_side as usize * 4 * size_of::<f32>();
+        for (face_idx, face) in cube_map_data
+            .chunks(cube_map_side as usize*cube_map_side as usize*4)
+            .enumerate()
+        {
+            (vtbl.SetImageFromMemory.unwrap())(texture as *mut _, 0, 0, face_idx as u32, face.as_ptr() as *const u8, face_size);
+        }
+        (vtbl.WriteToNamedFile.unwrap())(texture as *mut _, name.as_ptr());
+        (vtbl.Destroy.unwrap())(texture as *mut _);
+    }
+}
+
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
@@ -231,6 +267,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .short('s')
                 .help("Side of the output cubemaps in pixels")
         )
+        .arg(
+            clap::Arg::new("output-format")
+                .default_value("ktx")
+                .short('f')
+                // .value_names(["dds", "ktx"])
+                .value_parser(["ktx", "dds", "png"])
+                .default_value("ktx")
+                .help("Output cubemaps format")
+        )
         .get_matches();
 
     let input_image: &String = args.get_one("input-image").unwrap();
@@ -238,11 +283,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Err(format!("Input image file \"{}\" doesn't exist", input_image))?
     }
 
-    let cubemap_side = args.get_one::<String>("cubemap-side")
+    let cube_map_side = args.get_one::<String>("cubemap-side")
         .unwrap()
         .parse()
         .expect("cubemap-side must be a numeric value"); // TODO: can be enforced in clap?
-    dbg!(cubemap_side);
+    let output_format = args.get_one::<String>("output-format").unwrap().as_str();
+
 
     // Load environment map
     let mut img_file = File::open(input_image).await?;
@@ -285,33 +331,45 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap();
 
     // Convert equirectangular to cubemap
-    let cube_map = equirectangular_to_cubemap(&device, &queue, &env_map, cubemap_side).await.unwrap();
+    let cube_map = equirectangular_to_cubemap(&device, &queue, &env_map, cube_map_side).await.unwrap();
 
     // Download cubemap data
-    let cube_map_data = download_cubemap(&device, &queue, &cube_map, cubemap_side).await.unwrap();
+    let cube_map_data = download_cubemap(&device, &queue, &cube_map, cube_map_side).await.unwrap();
 
+    match output_format {
+        "png" => {
+            // Save as individual images per face
+            for (idx, face) in cube_map_data.chunks(cube_map_side as usize*cube_map_side as usize*4).enumerate() {
+                // let face0 = cubemap[0 .. cube_map_side as usize*cube_map_side as usize*4]
+                let face = face.chunks(4)
+                    .flat_map(|c| [
+                        (c[0] * u16::MAX as f32) as u16,
+                        (c[1] * u16::MAX as f32) as u16,
+                        (c[2] * u16::MAX as f32) as u16
+                    ]).collect();
+                let img: ImageBuffer<Rgb<u16>, _> = ImageBuffer::from_vec(cube_map_side, cube_map_side, face).unwrap();
+                img.save(format!("face{}.png", idx)).unwrap();
+            }
+        }
 
-    // Save as individual images per face
-    for (idx, face) in cube_map_data.chunks(cubemap_side as usize*cubemap_side as usize*4).enumerate() {
-        // let face0 = cubemap[0 .. cubemap_side as usize*cubemap_side as usize*4]
-        let face = face.chunks(4)
-            .flat_map(|c| [
-                (c[0] * u16::MAX as f32) as u16,
-                (c[1] * u16::MAX as f32) as u16,
-                (c[2] * u16::MAX as f32) as u16
-            ]).collect();
-        let img: ImageBuffer<Rgb<u16>, _> = ImageBuffer::from_vec(cubemap_side, cubemap_side, face).unwrap();
-        img.save(format!("face{}.png", idx)).unwrap();
+        "dds" => {
+            // Save as cubemap dds
+            let cube_map_datau8 = unsafe{
+                std::slice::from_raw_parts(cube_map_data.as_ptr() as *const u8, cube_map_data.len() * size_of::<f32>())
+            };
+            dds::Builder::new(cube_map_side as usize, cube_map_side as usize, dds::Format::RGBA, dds::Type::Float)
+                .is_cubemap_allfaces()
+                .create(cube_map_datau8)?
+                .save("skybox.dds")?;
+        }
+
+        "ktx" => write_cubemap_to_ktx(&cube_map_data, cube_map_side, "skybox.ktx"),
+
+        _ => unreachable!()
     }
 
-    // Save as cubemap dds
-    let cube_map_datau8 = unsafe{
-        std::slice::from_raw_parts(cube_map_data.as_ptr() as *const u8, cube_map_data.len() * size_of::<f32>())
-    };
-    dds::Builder::new(cubemap_side as usize, cubemap_side as usize, dds::Format::RGBA, dds::Type::Float)
-        .is_cubemap_allfaces()
-        .create(cube_map_datau8)?
-        .save("skybox.dds")?;
+
+
 
     Ok(())
 }
