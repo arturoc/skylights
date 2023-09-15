@@ -208,12 +208,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .required(true)
                 .help("Environment map to process")
         )
+        .arg(
+            clap::Arg::new("cubemap-side")
+                .default_value("1024")
+                .short('s')
+                .help("Side of the output cubemaps in pixels")
+        )
         .get_matches();
 
     let input_image: &String = args.get_one("input-image").unwrap();
     if !Path::new(input_image).exists().await {
         Err(format!("Input image file \"{}\" doesn't exist", input_image))?
     }
+
+    let cubemap_side = args.get_one::<String>("cubemap-side")
+        .unwrap()
+        .parse()
+        .expect("cubemap-side must be a numeric value"); // TODO: can be enforced in clap?
 
     // Load environment map
     let mut img_file = File::open(input_image).await?;
@@ -255,9 +266,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await
         .unwrap();
 
-    dbg!(device.limits().max_texture_dimension_2d);
-
-    let cubemap_side = 1024;
     let cubemap = equirectangular_to_cubemap(&device, &queue, &env_map, cubemap_side).await.unwrap();
     for (idx, face) in cubemap.chunks(cubemap_side as usize*cubemap_side as usize*4).enumerate() {
         // let face0 = cubemap[0 .. cubemap_side as usize*cubemap_side as usize*4]

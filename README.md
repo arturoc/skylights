@@ -9,13 +9,14 @@ It converts an input environment map in equirectangular format into 3 cubemaps:
 - Environment map to use optionally as a skybox
 
 ```
-Usage: skylights <input-image>
+Usage: skylights [OPTIONS] <input-image>
 
 Arguments:
   <input-image>  Environment map to process
 
 Options:
-  -h, --help  Print help
+  -s <cubemap-side>      Side of the output cubemaps in pixels [default: 1024]
+  -h, --help             Print help
 ```
 
 Skylights is sponsored by [novorender](https://novorender.com/)
