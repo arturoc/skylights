@@ -37,27 +37,20 @@ async fn equirectangular_to_cubemap(
         ..wgpu::TextureViewDescriptor::default()
     });
 
-    let cube_map_size = wgpu::Extent3d{ width: cubemap_side, height: cubemap_side, depth_or_array_layers: 6};
     let cube_map = device.create_texture(
         &TextureDescriptor {
             label: Some("Cubemap"),
-            size: cube_map_size,
+            size: wgpu::Extent3d{ width: cubemap_side, height: cubemap_side, depth_or_array_layers: 6},
             mip_level_count: 1,
             sample_count: 1,
-            dimension: wgpu::TextureDimension::D3,
+            dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba32Float,
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | TextureUsages::COPY_SRC,
-            view_formats: &[wgpu::TextureFormat::Rgba32Float]
+            view_formats: &[]
         },
     );
-
-    let cube_map_view = cube_map.create_view(&wgpu::TextureViewDescriptor {
-        label: None,
-        dimension: Some(wgpu::TextureViewDimension::D3),
-        ..wgpu::TextureViewDescriptor::default()
-    });
 
     let size = cubemap_side as u64 * cubemap_side as u64 * 6 * 4 * size_of::<f32>() as u64;
     let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -90,7 +83,7 @@ async fn equirectangular_to_cubemap(
                 ty: wgpu::BindingType::StorageTexture {
                     access: wgpu::StorageTextureAccess::WriteOnly,
                     format: TextureFormat::Rgba32Float,
-                    view_dimension: wgpu::TextureViewDimension::D3
+                    view_dimension: wgpu::TextureViewDimension::D2Array
                 },
                 count: None,
             },
@@ -113,53 +106,64 @@ async fn equirectangular_to_cubemap(
         entry_point: "main",
     });
 
-    // Instantiates the bind group, once again specifying the binding of buffers.
-    let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Equirectangular to Cubemap BindGroup"),
-        layout: &bind_group_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::TextureView(&env_map_view),
-        },wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::TextureView(&cube_map_view),
-        }],
-    });
-
     // A command encoder executes one or many pipelines.
     // It is to WebGPU what a command buffer is to Vulkan.
     let mut encoder =
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-    {
-        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: None,
-        });
-        cpass.set_pipeline(&compute_pipeline);
-        cpass.set_bind_group(0, &bind_group, &[]);
-        cpass.insert_debug_marker("Compute Equirectangular to Cubemap");
-        cpass.dispatch_workgroups(cubemap_side, cubemap_side, 6); // Number of cells to run, the (x,y,z) size of item being processed
-    }
 
-    // Sets adds copy operation to command encoder.
-    // Will copy data from storage buffer on GPU to staging buffer on CPU.
-    encoder.copy_texture_to_buffer(
-        wgpu::ImageCopyTextureBase {
-            texture: &cube_map,
-            mip_level: 0,
-            origin: Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All
-        },
-        wgpu::ImageCopyBufferBase{
-            buffer: &staging_buffer,
-            layout: ImageDataLayout{
-                offset: 0,
-                bytes_per_row: Some(cubemap_side * 4 * size_of::<f32>() as u32),
-                rows_per_image: Some(cubemap_side),
-            }
-        },
-        cube_map_size
-    );
+    // for face in 0..6 {
+    let face = 0;
+        let cube_map_view = cube_map.create_view(&wgpu::TextureViewDescriptor {
+            label: None,
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            array_layer_count: Some(6),
+            ..wgpu::TextureViewDescriptor::default()
+        });
+
+        // Instantiates the bind group, once again specifying the binding of buffers.
+        let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Equirectangular to Cubemap BindGroup"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&env_map_view),
+            },wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&cube_map_view),
+            }],
+        });
+
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+            });
+            cpass.set_pipeline(&compute_pipeline);
+            cpass.set_bind_group(0, &bind_group, &[]);
+            cpass.insert_debug_marker(&format!("Compute equirectangular to cubemap Face {}", face));
+            cpass.dispatch_workgroups(cubemap_side, cubemap_side, 6); // Number of cells to run, the (x,y,z) size of item being processed
+        }
+
+        // Sets adds copy operation to command encoder.
+        // Will copy data from storage buffer on GPU to staging buffer on CPU.
+        encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTextureBase {
+                texture: &cube_map,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All
+            },
+            wgpu::ImageCopyBufferBase{
+                buffer: &staging_buffer,
+                layout: ImageDataLayout{
+                    offset: 0,//cubemap_side as u64 * 4 * size_of::<f32>() as u64 * face as u64,
+                    bytes_per_row: Some(cubemap_side * 4 * size_of::<f32>() as u32),
+                    rows_per_image: Some(cubemap_side),
+                }
+            },
+            wgpu::Extent3d { width: cubemap_side, height: cubemap_side, depth_or_array_layers: 6 }
+        );
+    // }
 
     // Submits command encoder for processing
     queue.submit(Some(encoder.finish()));
@@ -225,6 +229,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap()
         .parse()
         .expect("cubemap-side must be a numeric value"); // TODO: can be enforced in clap?
+    dbg!(cubemap_side);
 
     // Load environment map
     let mut img_file = File::open(input_image).await?;
