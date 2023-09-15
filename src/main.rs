@@ -284,8 +284,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await
         .unwrap();
 
+    // Convert equirectangular to cubemap
     let cube_map = equirectangular_to_cubemap(&device, &queue, &env_map, cubemap_side).await.unwrap();
+
+    // Download cubemap data
     let cube_map_data = download_cubemap(&device, &queue, &cube_map, cubemap_side).await.unwrap();
+
+
+    // Save as individual images per face
     for (idx, face) in cube_map_data.chunks(cubemap_side as usize*cubemap_side as usize*4).enumerate() {
         // let face0 = cubemap[0 .. cubemap_side as usize*cubemap_side as usize*4]
         let face = face.chunks(4)
@@ -297,6 +303,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let img: ImageBuffer<Rgb<u16>, _> = ImageBuffer::from_vec(cubemap_side, cubemap_side, face).unwrap();
         img.save(format!("face{}.png", idx)).unwrap();
     }
+
+    // Save as cubemap dds
+    let cube_map_datau8 = unsafe{
+        std::slice::from_raw_parts(cube_map_data.as_ptr() as *const u8, cube_map_data.len() * size_of::<f32>())
+    };
+    dds::Builder::new(cubemap_side as usize, cubemap_side as usize, dds::Format::RGBA, dds::Type::Float)
+        .is_cubemap_allfaces()
+        .create(cube_map_datau8)?
+        .save("skybox.dds")?;
 
     Ok(())
 }

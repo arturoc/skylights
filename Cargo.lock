@@ -509,6 +509,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dds"
+version = "0.2.1"
+source = "registry+ssh://bitbucket.org/rin-rs/rin-registry.git"
+checksum = "6d75261fc4ec9f9d4d8946b876588b7f1a1f780a021ba83d2ee1540da0234f7b"
+
+[[package]]
 name = "either"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1505,6 +1511,7 @@ dependencies = [
  "async-std",
  "bytemuck",
  "clap",
+ "dds",
  "env_logger",
  "futures",
  "futures-intrusive",
