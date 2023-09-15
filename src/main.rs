@@ -8,7 +8,7 @@ async fn equirectangular_to_cubemap(
     queue: &wgpu::Queue,
     env_map: &DynamicImage,
     cubemap_side: u32,
-) -> Option<Vec<f32>> {
+) -> Option<wgpu::Texture> {
     // Loads the shader from WGSL
     let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
@@ -59,18 +59,9 @@ async fn equirectangular_to_cubemap(
         ..wgpu::TextureViewDescriptor::default()
     });
 
-    let size = cubemap_side as u64 * cubemap_side as u64 * 6 * 4 * size_of::<f32>() as u64;
-    let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
     // A bind group defines how buffers are accessed by shaders.
     // It is to WebGPU what a descriptor set is to Vulkan.
     // `binding` here refers to the `binding` of a buffer in the shader (`layout(set = 0, binding = 0) buffer`).
-
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
         entries: &[
@@ -97,13 +88,13 @@ async fn equirectangular_to_cubemap(
         ],
     });
 
+    // A pipeline specifies the operation of a shader
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Equirectangular To Cubemap Layout"),
         bind_group_layouts: &[&bind_group_layout],
         push_constant_ranges: &[],
     });
 
-    // A pipeline specifies the operation of a shader
 
     // Instantiates the pipeline.
     let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -142,11 +133,36 @@ async fn equirectangular_to_cubemap(
         cpass.dispatch_workgroups(cubemap_side, cubemap_side, 6); // Number of cells to run, the (x,y,z) size of item being processed
     }
 
-    // Sets adds copy operation to command encoder.
-    // Will copy data from storage buffer on GPU to staging buffer on CPU.
+    // Submits command encoder for processing
+    queue.submit(Some(encoder.finish()));
+
+    // Poll the device in a blocking manner so that our future resolves.
+    device.poll(wgpu::Maintain::Wait);
+
+    Some(cube_map)
+}
+
+async fn download_cubemap(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    cube_map: &wgpu::Texture,
+    cubemap_side: u32
+) -> Option<Vec<f32>>
+{
+
+    // Will copy data from texture on GPU to staging buffer on CPU.
+    let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: cubemap_side as u64 * cubemap_side as u64 * 6 * 4 * size_of::<f32>() as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     encoder.copy_texture_to_buffer(
         wgpu::ImageCopyTextureBase {
-            texture: &cube_map,
+            texture: cube_map,
             mip_level: 0,
             origin: Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All
@@ -165,15 +181,15 @@ async fn equirectangular_to_cubemap(
     // Submits command encoder for processing
     queue.submit(Some(encoder.finish()));
 
+
     // Note that we're not calling `.await` here.
     let buffer_slice = staging_buffer.slice(..);
     // Sets the buffer up for mapping, sending over the result of the mapping back to us when it is finished.
     let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
     buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
 
+
     // Poll the device in a blocking manner so that our future resolves.
-    // In an actual application, `device.poll(...)` should
-    // be called in an event loop or on another thread.
     device.poll(wgpu::Maintain::Wait);
 
     // Awaits until `buffer_future` can be read from
@@ -195,7 +211,7 @@ async fn equirectangular_to_cubemap(
         // Returns data from buffer
         Some(result)
     } else {
-        panic!("failed to run compute on gpu!")
+        None
     }
 }
 
@@ -268,8 +284,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await
         .unwrap();
 
-    let cubemap = equirectangular_to_cubemap(&device, &queue, &env_map, cubemap_side).await.unwrap();
-    for (idx, face) in cubemap.chunks(cubemap_side as usize*cubemap_side as usize*4).enumerate() {
+    let cube_map = equirectangular_to_cubemap(&device, &queue, &env_map, cubemap_side).await.unwrap();
+    let cube_map_data = download_cubemap(&device, &queue, &cube_map, cubemap_side).await.unwrap();
+    for (idx, face) in cube_map_data.chunks(cubemap_side as usize*cubemap_side as usize*4).enumerate() {
         // let face0 = cubemap[0 .. cubemap_side as usize*cubemap_side as usize*4]
         let face = face.chunks(4)
             .flat_map(|c| [
