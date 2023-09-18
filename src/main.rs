@@ -5,6 +5,7 @@ use libktx_rs_sys::{ktxTexture2_Create, ktxTextureCreateStorageEnum_KTX_TEXTURE_
 use wgpu::{util::{DeviceExt, BufferInitDescriptor}, TextureDescriptor, TextureFormat, TextureUsages, Origin3d, ImageDataLayout, ImageCopyTexture};
 use async_std::{prelude::*, fs::File, task::spawn_blocking, path::Path};
 
+// Runs a compute shader that converts an equirectangular input image into a cubemap
 async fn equirectangular_to_cubemap(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -227,7 +228,7 @@ fn generate_mipmaps(
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
     encoder.copy_texture_to_texture(
-        ImageCopyTexture{texture, mip_level: 0, origin: Origin3d::ZERO, aspect: wgpu::TextureAspect::All}, 
+        ImageCopyTexture{texture, mip_level: 0, origin: Origin3d::ZERO, aspect: wgpu::TextureAspect::All},
         ImageCopyTexture{texture: &output, mip_level: 0, origin: Origin3d::ZERO, aspect: wgpu::TextureAspect::All},
         wgpu::Extent3d { width: texture.width(), height: texture.height(), depth_or_array_layers: texture.depth_or_array_layers() }
     );
@@ -289,6 +290,8 @@ fn generate_mipmaps(
     output
 }
 
+// Downloads the data of a cubemap in GPU memory to a Vec<f32>. It returns the data
+// and the number of levels that it downloaded
 async fn download_cubemap(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -376,6 +379,7 @@ async fn download_cubemap(
     Some((result, read_levels))
 }
 
+// Writes the data of a cubemap as downloaded from GPU to a KTX2
 fn write_cubemap_to_ktx(cubemap_data: &[f32], cubemap_side: u32, cubemap_levels: u32, output_file: &str) {
     const GL_RGBA32F: u32 = 0x8814;
     const VK_FORMAT_R32G32B32A32_SFLOAT: u32 = 109;
@@ -415,6 +419,7 @@ fn write_cubemap_to_ktx(cubemap_data: &[f32], cubemap_side: u32, cubemap_levels:
     }
 }
 
+// Writes the data of a cubemap as downloaded from GPU to a DDS
 fn write_cubemap_to_dds(cubemap_data: &[f32], cubemap_side: u32, cubemap_levels: u32, output_file: &str) -> Result<(), dds::Error> {
     // Dds layout is transposed, each face with all it's levels but we have each level with
     // all it's faces so we need to transpose first
@@ -466,7 +471,8 @@ fn write_cubemap_to_dds(cubemap_data: &[f32], cubemap_side: u32, cubemap_levels:
     // }
 }
 
-
+// Bakes the IBL radiance map from an environment map. The input environment map and the output
+// radiance map are cubemaps
 async fn radiance(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -662,6 +668,8 @@ async fn radiance(
     Some(output)
 }
 
+// Bakes the IBL irradiance map from an environment map. The input environment map and the output
+// radiance map are cubemaps
 async fn irradiance(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
