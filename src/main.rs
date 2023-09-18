@@ -298,7 +298,7 @@ fn write_cubemap_to_dds(cube_map_data: &[f32], cube_map_side: u32, cubemap_level
         .is_cubemap_allfaces()
         .has_mipmaps(cubemap_levels as usize)
         .create(radiance_datau8)?;
-    dds.save("radiance.dds")
+    dds.save(output_file)
 
 
 
