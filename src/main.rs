@@ -9,7 +9,7 @@ async fn equirectangular_to_cubemap(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     env_map: &DynamicImage,
-    cube_map_side: u32,
+    cubemap_side: u32,
 ) -> Option<wgpu::Texture> {
     // Loads the shader from WGSL
     let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -39,10 +39,10 @@ async fn equirectangular_to_cubemap(
         ..wgpu::TextureViewDescriptor::default()
     });
 
-    let cube_map = device.create_texture(
+    let cubemap = device.create_texture(
         &TextureDescriptor {
             label: Some("Cubemap"),
-            size: wgpu::Extent3d{ width: cube_map_side, height: cube_map_side, depth_or_array_layers: 6},
+            size: wgpu::Extent3d{ width: cubemap_side, height: cubemap_side, depth_or_array_layers: 6},
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -54,7 +54,7 @@ async fn equirectangular_to_cubemap(
         },
     );
 
-    let cube_map_view = cube_map.create_view(&wgpu::TextureViewDescriptor {
+    let cubemap_view = cubemap.create_view(&wgpu::TextureViewDescriptor {
         label: None,
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         array_layer_count: Some(6),
@@ -117,7 +117,7 @@ async fn equirectangular_to_cubemap(
             resource: wgpu::BindingResource::TextureView(&env_map_view),
         },wgpu::BindGroupEntry {
             binding: 1,
-            resource: wgpu::BindingResource::TextureView(&cube_map_view),
+            resource: wgpu::BindingResource::TextureView(&cubemap_view),
         }],
     });
 
@@ -132,7 +132,7 @@ async fn equirectangular_to_cubemap(
         cpass.set_pipeline(&compute_pipeline);
         cpass.set_bind_group(0, &bind_group, &[]);
         cpass.insert_debug_marker("Compute equirectangular to cubemap");
-        cpass.dispatch_workgroups(cube_map_side, cube_map_side, 6); // Number of cells to run, the (x,y,z) size of item being processed
+        cpass.dispatch_workgroups(cubemap_side, cubemap_side, 6); // Number of cells to run, the (x,y,z) size of item being processed
     }
 
     // Submits command encoder for processing
@@ -141,13 +141,13 @@ async fn equirectangular_to_cubemap(
     // Poll the device in a blocking manner so that our future resolves.
     device.poll(wgpu::Maintain::Wait);
 
-    Some(cube_map)
+    Some(cubemap)
 }
 
 async fn download_cubemap(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    cube_map: &wgpu::Texture,
+    cubemap: &wgpu::Texture,
 ) -> Option<(Vec<f32>, u32)>
 {
 
@@ -157,15 +157,15 @@ async fn download_cubemap(
     // Will copy data from texture on GPU to staging buffer on CPU.
     let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: cube_map.width() as u64 * cube_map.height() as u64 * 6 * 4 * size_of::<f32>() as u64,
+        size: cubemap.width() as u64 * cubemap.height() as u64 * 6 * 4 * size_of::<f32>() as u64,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
     let mut read_levels = 0;
-    for level in 0..cube_map.mip_level_count() {
+    for level in 0..cubemap.mip_level_count() {
         println!("Downloading level {level}");
-        let level_side = cube_map.width() >> level;
+        let level_side = cubemap.width() >> level;
         if (level_side * 4 * size_of::<f32>() as u32) < wgpu::COPY_BYTES_PER_ROW_ALIGNMENT {
             // TODO: texture row size must be at least 256 which is not the case for the lowest levels
             // we are just not downloading them by now. This would require having bigger textures for
@@ -180,7 +180,7 @@ async fn download_cubemap(
 
         encoder.copy_texture_to_buffer(
             wgpu::ImageCopyTextureBase {
-                texture: cube_map,
+                texture: cubemap,
                 mip_level: level,
                 origin: Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All
@@ -231,12 +231,12 @@ async fn download_cubemap(
     Some((result, read_levels))
 }
 
-fn write_cubemap_to_ktx(cube_map_data: &[f32], cube_map_side: u32, cubemap_levels: u32, output_file: &str) {
+fn write_cubemap_to_ktx(cubemap_data: &[f32], cubemap_side: u32, cubemap_levels: u32, output_file: &str) {
     const GL_RGBA32F: u32 = 0x8814;
     const VK_FORMAT_R32G32B32A32_SFLOAT: u32 = 109;
     let mut create_info = libktx_rs_sys::ktxTextureCreateInfo {
-        baseWidth: cube_map_side,
-        baseHeight: cube_map_side,
+        baseWidth: cubemap_side,
+        baseHeight: cubemap_side,
         baseDepth: 1,
         numDimensions: 2,
         numLevels: cubemap_levels,
@@ -255,9 +255,9 @@ fn write_cubemap_to_ktx(cube_map_data: &[f32], cube_map_side: u32, cubemap_level
         let vtbl = &*(*texture).vtbl;
         let mut prev_end = 0;
         for level in 0..cubemap_levels {
-            let level_side = cube_map_side >> level;
+            let level_side = cubemap_side >> level;
             let face_size = level_side as usize * level_side as usize * 4 * size_of::<f32>();
-            for (face_idx, face) in cube_map_data[prev_end..]
+            for (face_idx, face) in cubemap_data[prev_end..]
                 .chunks(level_side as usize * level_side as usize * 4)
                 .enumerate()
             {
@@ -270,18 +270,18 @@ fn write_cubemap_to_ktx(cube_map_data: &[f32], cube_map_side: u32, cubemap_level
     }
 }
 
-fn write_cubemap_to_dds(cube_map_data: &[f32], cube_map_side: u32, cubemap_levels: u32, output_file: &str) -> Result<(), dds::Error> {
+fn write_cubemap_to_dds(cubemap_data: &[f32], cubemap_side: u32, cubemap_levels: u32, output_file: &str) -> Result<(), dds::Error> {
     // Dds layout is transposed, each face with all it's levels but we have each level with
     // all it's faces so we need to transpose first
     let mut dds_data = vec![];
     for face_idx in 0..6 {
         let mut prev_end = 0;
         for level in 0..cubemap_levels {
-            let level_side = cube_map_side >> level;
-            if cube_map_data.len() <= prev_end {
+            let level_side = cubemap_side >> level;
+            if cubemap_data.len() <= prev_end {
                 break;
             }
-            let face = cube_map_data[prev_end..]
+            let face = cubemap_data[prev_end..]
                 .chunks(level_side as usize * level_side as usize * 4).skip(face_idx)
                 .next()
                 .unwrap();
@@ -294,7 +294,7 @@ fn write_cubemap_to_dds(cube_map_data: &[f32], cube_map_side: u32, cubemap_level
     let radiance_datau8 = unsafe{
         std::slice::from_raw_parts(dds_data.as_ptr() as *const u8, dds_data.len() * size_of::<f32>())
     };
-    let dds = dds::Builder::new(cube_map_side as usize, cube_map_side as usize, dds::Format::RGBA, dds::Type::Float)
+    let dds = dds::Builder::new(cubemap_side as usize, cubemap_side as usize, dds::Format::RGBA, dds::Type::Float)
         .is_cubemap_allfaces()
         .has_mipmaps(cubemap_levels as usize)
         .create(radiance_datau8)?;
@@ -305,7 +305,7 @@ fn write_cubemap_to_dds(cube_map_data: &[f32], cube_map_side: u32, cubemap_level
     // Test dds is saving correctly
     // for face_idx in 0..6 {
     //     for level in 0..read_levels {
-    //         let level_side = cube_map_side >> level;
+    //         let level_side = cubemap_side >> level;
     //         let face = dds.face(face_idx).unwrap().mipmap(level as usize).unwrap().data().chunks(4 * size_of::<f32>())
     //             .flat_map(|c| {
     //                 let c = unsafe{ std::slice::from_raw_parts(c.as_ptr() as *const f32, 4) };
@@ -326,7 +326,7 @@ async fn radiance(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     env_map: &wgpu::Texture,
-    cube_map_side: u32,
+    cubemap_side: u32,
 ) -> Option<wgpu::Texture> {
     // Loads the shader from WGSL
     let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -340,11 +340,11 @@ async fn radiance(
         ..wgpu::TextureViewDescriptor::default()
     });
 
-    let max_mip = (cube_map_side as f32).log2().floor() as u32 + 1;
+    let max_mip = (cubemap_side as f32).log2().floor() as u32 + 1;
     let output = device.create_texture(
         &TextureDescriptor {
             label: Some("Radiance"),
-            size: wgpu::Extent3d{ width: cube_map_side, height: cube_map_side, depth_or_array_layers: 6},
+            size: wgpu::Extent3d{ width: cubemap_side, height: cubemap_side, depth_or_array_layers: 6},
             mip_level_count: max_mip,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -440,7 +440,7 @@ async fn radiance(
 
     for mip_level in 0..max_mip {
         // TODO: doing all the cycles in one command encoder hangs the OS and outputs black
-        println!("Processing level {mip_level} side: {}", cube_map_side >> mip_level);
+        println!("Processing level {mip_level} side: {}", cubemap_side >> mip_level);
 
         // A command encoder executes one or many pipelines.
         // It is to WebGPU what a command buffer is to Vulkan.
@@ -506,7 +506,7 @@ async fn radiance(
             cpass.set_bind_group(0, &bind_group, &[]);
             cpass.set_bind_group(1, &bind_group_uniforms, &[]);
             cpass.insert_debug_marker(&format!("Compute radiance level {}", mip_level));
-            cpass.dispatch_workgroups(cube_map_side >> mip_level, cube_map_side >> mip_level, 6); // Number of cells to run, the (x,y,z) size of item being processed
+            cpass.dispatch_workgroups(cubemap_side >> mip_level, cubemap_side >> mip_level, 6); // Number of cells to run, the (x,y,z) size of item being processed
         }
 
         // Submits command encoder for processing
@@ -551,7 +551,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Err(format!("Input image file \"{}\" doesn't exist", input_image))?
     }
 
-    let cube_map_side = args.get_one::<String>("cubemap-side")
+    let cubemap_side = args.get_one::<String>("cubemap-side")
         .unwrap()
         .parse()
         .expect("cubemap-side must be a numeric value"); // TODO: can be enforced in clap?
@@ -599,43 +599,43 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap();
 
     // Convert equirectangular to cubemap
-    let env_map = equirectangular_to_cubemap(&device, &queue, &env_map, cube_map_side).await.unwrap();
+    let env_map = equirectangular_to_cubemap(&device, &queue, &env_map, cubemap_side).await.unwrap();
 
     // Download environment map data
     let (env_map_data, _) = download_cubemap(&device, &queue, &env_map).await.unwrap();
     match output_format {
         "png" => {
             // Save as individual images per face
-            for (idx, face) in env_map_data.chunks(cube_map_side as usize*cube_map_side as usize*4).enumerate() {
+            for (idx, face) in env_map_data.chunks(cubemap_side as usize*cubemap_side as usize*4).enumerate() {
                 let face = face.chunks(4)
                     .flat_map(|c| [
                         (c[0] * u16::MAX as f32) as u16,
                         (c[1] * u16::MAX as f32) as u16,
                         (c[2] * u16::MAX as f32) as u16
                     ]).collect();
-                let img: ImageBuffer<Rgb<u16>, _> = ImageBuffer::from_vec(cube_map_side, cube_map_side, face).unwrap();
+                let img: ImageBuffer<Rgb<u16>, _> = ImageBuffer::from_vec(cubemap_side, cubemap_side, face).unwrap();
                 img.save(format!("face{}.png", idx)).unwrap();
             }
         }
 
         "dds" => {
             // Save as cubemap dds
-            let cube_map_datau8 = unsafe{
+            let cubemap_datau8 = unsafe{
                 std::slice::from_raw_parts(env_map_data.as_ptr() as *const u8, env_map_data.len() * size_of::<f32>())
             };
-            dds::Builder::new(cube_map_side as usize, cube_map_side as usize, dds::Format::RGBA, dds::Type::Float)
+            dds::Builder::new(cubemap_side as usize, cubemap_side as usize, dds::Format::RGBA, dds::Type::Float)
                 .is_cubemap_allfaces()
-                .create(cube_map_datau8)?
+                .create(cubemap_datau8)?
                 .save("skybox.dds")?;
         }
 
-        "ktx" => write_cubemap_to_ktx(&env_map_data, cube_map_side, 1, "skybox.ktx"),
+        "ktx" => write_cubemap_to_ktx(&env_map_data, cubemap_side, 1, "skybox.ktx"),
 
         _ => unreachable!()
     }
 
     // Calculate radiance
-    let radiance = radiance(&device, &queue, &env_map, cube_map_side).await.unwrap();
+    let radiance = radiance(&device, &queue, &env_map, cubemap_side).await.unwrap();
 
     // Download radiance data
     let (radiance_data, read_levels) = download_cubemap(&device, &queue, &radiance).await.unwrap();
@@ -644,7 +644,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             // Save as individual images per face
             let mut prev_end = 0;
             for level in 0..read_levels {
-                let level_side = cube_map_side >> level;
+                let level_side = cubemap_side >> level;
                 for (idx, face) in radiance_data[prev_end..].chunks(level_side as usize * level_side as usize * 4).enumerate().take(6) {
                     let face = face.chunks(4)
                         .flat_map(|c| [
@@ -660,10 +660,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
 
         "dds" => {
-            write_cubemap_to_dds(&radiance_data, cube_map_side, read_levels, "radiance.dds")?;
+            write_cubemap_to_dds(&radiance_data, cubemap_side, read_levels, "radiance.dds")?;
         }
 
-        "ktx" => write_cubemap_to_ktx(&radiance_data, cube_map_side, read_levels, "radiance.ktx"),
+        "ktx" => write_cubemap_to_ktx(&radiance_data, cubemap_side, read_levels, "radiance.ktx"),
 
         _ => unreachable!()
     }
