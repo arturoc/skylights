@@ -135,7 +135,7 @@ fn importance_sample_ggx(e: vec2f, linear_roughness: f32, n: vec3f ) -> vec3f{
 	if (abs(n.z) < 0.999) {
 		up_vector = vec3(0.,0.,1.);
 	}
-	let tangent_x = normalize( cross( up_vector, n ) );
+	let tangent_x = normalize(cross( up_vector, n ));
 	let tangent_y = cross( n, tangent_x );
 	// tangent to world space
 	return normalize(tangent_x * h.x + tangent_y * h.y + n * h.z);
@@ -198,8 +198,8 @@ fn radiance(@builtin(global_invocation_id) global_id: vec3<u32>) {
 			if (roughness != 0.0) {
 				mip_level = 0.5 * log2(sa_sample / sa_texel);
 			}
-	        let pointRadiance = textureSampleLevel(envmap, envmap_sampler, l, mip_level);
-	        total_radiance += vec4(pointRadiance.rgb * ndl, ndl);
+	        let pointRadiance = textureSampleLevel(envmap, envmap_sampler, l, mip_level).rgb;
+	        total_radiance += vec4(pointRadiance * ndl, ndl);
 	    }
 	}
 
@@ -243,7 +243,7 @@ fn irradiance(@builtin(global_invocation_id) global_id: vec3<u32>){
             let solidAngleSample = 1.0 / (f32(MAX_SAMPLES) * pdf + 0.0001);
             let lod = 0.5 * log2(solidAngleSample / solidAngleTexel);
 
-	        let diffuseSample = textureSampleLevel(envmap, envmap_sampler, h, 0.).rgb;
+	        let diffuseSample = textureSampleLevel(envmap, envmap_sampler, h, lod).rgb;
 	        total_irradiance += vec4(diffuseSample * ndl, ndl);
 	    }
 	}

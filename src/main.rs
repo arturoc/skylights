@@ -273,7 +273,7 @@ fn generate_mipmaps(
             });
             cpass.set_pipeline(&compute_pipeline);
             cpass.set_bind_group(0, &bind_group, &[]);
-            cpass.insert_debug_marker("Generate miomaps");
+            cpass.insert_debug_marker("Generate mipmaps");
             cpass.dispatch_workgroups(side, side, 6); // Number of cells to run, the (x,y,z) size of item being processed
         }
 
@@ -488,6 +488,7 @@ async fn radiance(
     let env_map_view = env_map.create_view(&wgpu::TextureViewDescriptor {
         label: None,
         dimension: Some(wgpu::TextureViewDimension::Cube),
+        mip_level_count: Some(env_map.mip_level_count()),
         ..wgpu::TextureViewDescriptor::default()
     });
 
@@ -685,6 +686,7 @@ async fn irradiance(
     let env_map_view = env_map.create_view(&wgpu::TextureViewDescriptor {
         label: None,
         dimension: Some(wgpu::TextureViewDimension::Cube),
+        mip_level_count: Some(env_map.mip_level_count()),
         ..wgpu::TextureViewDescriptor::default()
     });
 
