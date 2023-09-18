@@ -23,6 +23,7 @@ const CP_UDIR = 0u;
 const CP_VDIR = 1u;
 const CP_FACEAXIS = 2u;
 const M_PI = 3.1415926535897932384626433832795;
+const M_INV_PI = 0.31830988618;
 const MAX_SAMPLES = 1024u;
 
 fn face_2d_mapping(face: u32) -> array<vec3f, 3> {
@@ -140,6 +141,27 @@ fn importance_sample_ggx(e: vec2f, linear_roughness: f32, n: vec3f ) -> vec3f{
 	return normalize(tangent_x * h.x + tangent_y * h.y + n * h.z);
 }
 
+fn importance_sample_diffuse(e: vec2f, n: vec3f) -> vec3f {
+    let cos_theta = 1.0 - e.y;
+    let sin_theta = sqrt(1.0-cos_theta*cos_theta);
+	let phi = 2. * M_PI * e.x;
+
+	let h = vec3(
+		sin_theta * cos( phi ),
+		sin_theta * sin( phi ),
+		cos_theta
+	);
+
+	var up_vector = vec3(1.,0.,0.);
+	if (abs(n.z) < 0.999) {
+		up_vector = vec3(0.,0.,1.);
+	}
+	let tangent_x = normalize( cross( up_vector, n ) );
+	let tangent_y = cross( n, tangent_x );
+
+    return tangent_x * h.x + tangent_y * h.y + n * h.z;
+}
+
 fn d_ggx(linear_roughness: f32, ndh: f32) -> f32{
     let m = linear_roughness;
     let m2 = m * m;
@@ -180,11 +202,64 @@ fn radiance(@builtin(global_invocation_id) global_id: vec3<u32>) {
 	        total_radiance += vec4(pointRadiance.rgb * ndl, ndl);
 	    }
 	}
-	let color = vec4(total_radiance.rgb / total_radiance.w, 1.);
+
+	var color = vec4(0.);
+	if (total_radiance.w == 0.){
+		color = vec4(total_radiance.rgb, 1.);
+	}else{
+		color = vec4(total_radiance.rgb / total_radiance.w, 1.);
+	}
+
     textureStore(
 		output_faces,
 		vec2<i32>(global_id.xy),
 		i32(face),
 		color
 	);
+}
+
+@compute
+@workgroup_size(1)
+fn irradiance(@builtin(global_invocation_id) global_id: vec3<u32>){
+	let resolution = f32(textureDimensions(output_faces).x);
+    let texel = vec2<f32>(global_id.xy) / resolution;
+    let face = global_id.z;
+    let v = uv_face_to_cubemap_xyz(texel, face);
+	let n = v;
+
+	var total_irradiance = vec4(0.);
+	for(var sample = 0u; sample < MAX_SAMPLES; sample += 1u){
+		let xi = hammersley(sample, MAX_SAMPLES);
+		let h = importance_sample_diffuse(xi, n);
+	    let l = normalize(2. * dot(n, h) * h - n);
+		let ndl = max(dot(n, l), 0.);
+
+		if (ndl > 0.){
+			// Compute Lod using inverse solid angle and pdf.
+            // From Chapter 20.4 Mipmap filtered samples in GPU Gems 3.
+            // http://http.developer.nvidia.com/GPUGems3/gpugems3_ch20.html
+			let pdf = max(0.0, dot(n, l) * M_INV_PI);
+			let solidAngleTexel = 4.0 * M_PI / (6.0 * resolution * resolution);
+            let solidAngleSample = 1.0 / (f32(MAX_SAMPLES) * pdf + 0.0001);
+            let lod = 0.5 * log2(solidAngleSample / solidAngleTexel);
+
+	        let diffuseSample = textureSampleLevel(envmap, envmap_sampler, h, 0.).rgb;
+	        total_irradiance += vec4(diffuseSample * ndl, ndl);
+	    }
+	}
+
+	var color = vec4(0.);
+	if (total_irradiance.w == 0.){
+		color = vec4(total_irradiance.rgb, 1.);
+	}else{
+		color = vec4(total_irradiance.rgb / total_irradiance.w, 1.);
+	}
+
+    textureStore(
+		output_faces,
+		vec2<i32>(global_id.xy),
+		i32(face),
+		color
+	);
+
 }

@@ -331,7 +331,7 @@ async fn radiance(
     // Loads the shader from WGSL
     let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
-        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/radiance.wgsl"))),
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/ibl_bake.wgsl"))),
     });
 
     let env_map_view = env_map.create_view(&wgpu::TextureViewDescriptor {
@@ -349,9 +349,6 @@ async fn radiance(
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba32Float,
-            // usage: TextureUsages::COPY_SRC
-            //     | TextureUsages::COPY_DST,
-
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | TextureUsages::COPY_SRC,
             view_formats: &[]
@@ -519,6 +516,161 @@ async fn radiance(
     Some(output)
 }
 
+async fn irradiance(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    env_map: &wgpu::Texture,
+    cubemap_side: u32,
+) -> Option<wgpu::Texture> {
+    // Loads the shader from WGSL
+    let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/ibl_bake.wgsl"))),
+    });
+
+    let env_map_view = env_map.create_view(&wgpu::TextureViewDescriptor {
+        label: None,
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..wgpu::TextureViewDescriptor::default()
+    });
+
+    let output = device.create_texture(
+        &TextureDescriptor {
+            label: Some("Irradiance"),
+            size: wgpu::Extent3d{ width: cubemap_side, height: cubemap_side, depth_or_array_layers: 6},
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | TextureUsages::COPY_SRC,
+            view_formats: &[]
+        },
+    );
+
+    let output_view = output.create_view(&wgpu::TextureViewDescriptor {
+        label: None,
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        array_layer_count: Some(6),
+        ..wgpu::TextureViewDescriptor::default()
+    });
+
+    // A bind group defines how buffers are accessed by shaders.
+    // It is to WebGPU what a descriptor set is to Vulkan.
+    // `binding` here refers to the `binding` of a buffer in the shader (`layout(set = 0, binding = 0) buffer`).
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::Cube,
+                    multisampled: false
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: TextureFormat::Rgba32Float,
+                    view_dimension: wgpu::TextureViewDimension::D2Array
+                },
+                count: None,
+            },
+        ],
+    });
+
+    // A pipeline specifies the operation of a shader
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Equirectangular To Cubemap Layout"),
+        bind_group_layouts: &[&bind_group_layout],
+        push_constant_ranges: &[],
+    });
+
+
+    // Instantiates the pipeline.
+    let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&pipeline_layout),
+        module: &cs_module,
+        entry_point: "irradiance",
+    });
+
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: None,
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+
+    #[repr(C)]
+    #[derive(Pod, Copy, Clone, Zeroable)]
+    struct RadianceData {
+        mip_level: u32,
+        max_mip: u32,
+    }
+
+    println!("Processing irradiance");
+
+    // A command encoder executes one or many pipelines.
+    // It is to WebGPU what a command buffer is to Vulkan.
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+    // Instantiates the bind group, once again specifying the binding of buffers.
+    let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Radiance BindGroup"),
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&env_map_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&output_view),
+            },
+        ],
+    });
+
+    {
+        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Compute irradiance"),
+        });
+        cpass.set_pipeline(&compute_pipeline);
+        cpass.set_bind_group(0, &bind_group, &[]);
+        cpass.insert_debug_marker("Compute irradiance");
+        cpass.dispatch_workgroups(cubemap_side, cubemap_side, 6); // Number of cells to run, the (x,y,z) size of item being processed
+    }
+
+    // Submits command encoder for processing
+    queue.submit(Some(encoder.finish()));
+
+    // Poll the device in a blocking manner so that our future resolves.
+    device.poll(wgpu::Maintain::Wait);
+
+    Some(output)
+}
+
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
@@ -662,6 +814,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "dds" => write_cubemap_to_dds(&radiance_data, cubemap_side, read_levels, "radiance.dds")?,
 
         "ktx" => write_cubemap_to_ktx(&radiance_data, cubemap_side, read_levels, "radiance.ktx"),
+
+        _ => unreachable!()
+    }
+
+
+
+    // Calculate irradiance
+    let irradiance = irradiance(&device, &queue, &env_map, cubemap_side).await.unwrap();
+
+    // Download irradiance data
+    let (irradiance_data, _) = download_cubemap(&device, &queue, &irradiance).await.unwrap();
+    match output_format {
+        "png" => {
+            // Save as individual images per face
+            for (idx, face) in irradiance_data.chunks(cubemap_side as usize * cubemap_side as usize * 4).enumerate().take(6) {
+                let face = face.chunks(4)
+                    .flat_map(|c| [
+                        (c[0] * u16::MAX as f32) as u16,
+                        (c[1] * u16::MAX as f32) as u16,
+                        (c[2] * u16::MAX as f32) as u16
+                    ]).collect();
+                let img: ImageBuffer<Rgb<u16>, _> = ImageBuffer::from_vec(cubemap_side, cubemap_side, face).unwrap();
+                img.save(format!("irradiance_face{}.png", idx)).unwrap();
+            }
+        }
+
+        "dds" => write_cubemap_to_dds(&irradiance_data, cubemap_side, 1, "irradiance.dds")?,
+
+        "ktx" => write_cubemap_to_ktx(&irradiance_data, cubemap_side, 1, "irradiance.ktx"),
 
         _ => unreachable!()
     }
