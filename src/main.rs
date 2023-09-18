@@ -437,7 +437,8 @@ async fn radiance(
 
     for mip_level in 0..max_mip {
         // TODO: doing all the cycles in one command encoder hangs the OS and outputs black
-        println!("Processing level {mip_level} side: {}", cubemap_side >> mip_level);
+        let level_side = cubemap_side >> mip_level;
+        println!("Processing radiance level {mip_level} side: {}", level_side);
 
         // A command encoder executes one or many pipelines.
         // It is to WebGPU what a command buffer is to Vulkan.
@@ -503,7 +504,7 @@ async fn radiance(
             cpass.set_bind_group(0, &bind_group, &[]);
             cpass.set_bind_group(1, &bind_group_uniforms, &[]);
             cpass.insert_debug_marker(&format!("Compute radiance level {}", mip_level));
-            cpass.dispatch_workgroups(cubemap_side >> mip_level, cubemap_side >> mip_level, 6); // Number of cells to run, the (x,y,z) size of item being processed
+            cpass.dispatch_workgroups(level_side, level_side, 6); // Number of cells to run, the (x,y,z) size of item being processed
         }
 
         // Submits command encoder for processing
