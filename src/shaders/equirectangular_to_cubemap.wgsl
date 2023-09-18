@@ -4,7 +4,7 @@ var equirectangular: texture_storage_2d<rgba32float, read>;
 
 @group(0)
 @binding(1)
-var cubemap_face: texture_storage_2d_array<rgba32float, write>;
+var cubemap_faces: texture_storage_2d_array<rgba32float, write>;
 
 
 const INV_ATAN: vec2<f32> = vec2(0.1591, 0.3183);
@@ -74,7 +74,7 @@ fn face_2d_mapping(face: u32) -> array<vec3f, 3> {
 		vec3(-0., 0., 0.),    //u towards negative X
 		vec3(0., -0., 0.),    //v towards negative Y
 		vec3(0., 0., -0.)
-);   //ne
+	);   //ne
 }
 
 fn signed_uv_face_to_cubemap_xyz(uv: vec2f, face_idx: u32) -> vec3f{
@@ -99,14 +99,14 @@ fn uv_face_to_cubemap_xyz(uv: vec2<f32>, face_idx: u32) -> vec3f {
 
 @compute
 @workgroup_size(1)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let texel = vec2<f32>(global_id.xy) / f32(textureDimensions(cubemap_face).x);
+fn equirectangular_to_cubemap(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let texel = vec2<f32>(global_id.xy) / f32(textureDimensions(cubemap_faces).x);
     let face = global_id.z;
     let v = uv_face_to_cubemap_xyz(texel, face);
     let uv = vec2<i32>(sample_spherical_map(v) * vec2<f32>(textureDimensions(equirectangular)));
     let color = textureLoad(equirectangular, uv);
     textureStore(
-		cubemap_face,
+		cubemap_faces,
 		vec2<i32>(global_id.xy),
 		i32(face),
 		color
