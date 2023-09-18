@@ -592,7 +592,7 @@ async fn irradiance(
 
     // A pipeline specifies the operation of a shader
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Equirectangular To Cubemap Layout"),
+        label: Some("Irradiance Layout"),
         bind_group_layouts: &[&bind_group_layout],
         push_constant_ranges: &[],
     });
@@ -634,7 +634,7 @@ async fn irradiance(
     // Instantiates the bind group, once again specifying the binding of buffers.
     let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Radiance BindGroup"),
+        label: Some("Irradiance BindGroup"),
         layout: &bind_group_layout,
         entries: &[
             wgpu::BindGroupEntry {
