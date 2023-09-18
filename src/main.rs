@@ -659,9 +659,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        "dds" => {
-            write_cubemap_to_dds(&radiance_data, cubemap_side, read_levels, "radiance.dds")?;
-        }
+        "dds" => write_cubemap_to_dds(&radiance_data, cubemap_side, read_levels, "radiance.dds")?,
 
         "ktx" => write_cubemap_to_ktx(&radiance_data, cubemap_side, read_levels, "radiance.ktx"),
 
