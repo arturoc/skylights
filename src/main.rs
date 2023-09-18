@@ -730,11 +730,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Instantiates instance of WebGPU
     let instance = wgpu::Instance::default();
 
-    // `request_adapter` instantiates the general connection to the GPU
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions::default())
+    let adapter = instance.enumerate_adapters(wgpu::Backends::all())
+        .find(|adapter| adapter.get_info().device_type == wgpu::DeviceType::DiscreteGpu);
+
+    let adapter = if let Some(adapter) = adapter {
+        adapter
+    }else{
+        println!("Couldn't find any DiscreteGpu trying to use default HighPerformance adapter");
+        instance
+            .request_adapter(&wgpu::RequestAdapterOptions{
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                ..Default::default()
+            })
         .await
-        .ok_or_else(|| "Error requesting adapter")?;
+            .ok_or_else(|| "Error requesting adapter")?
+    };
+
+    println!("Using adapter: {:?}", adapter.get_info());
 
     // `request_device` instantiates the feature specific connection to the GPU, defining some parameters,
     //  `features` being the available features.
