@@ -421,8 +421,12 @@ async fn download_cubemap(
     Some(result)
 }
 
-// Writes the data of a cubemap as downloaded from GPU to a KTX2
-fn write_cubemap_to_ktx(cubemap_data: &[f32], cubemap_side: u32, cubemap_levels: u32, output_file: &str) {
+enum KtxVersion {
+    _1,
+    _2,
+}
+
+fn write_cubemap_to_ktx(cubemap_data: &[f32], cubemap_side: u32, cubemap_levels: u32, output_file: &str, ktx_version: KtxVersion) {
     const GL_RGBA32F: u32 = 0x8814;
     const VK_FORMAT_R32G32B32A32_SFLOAT: u32 = 109;
     let mut create_info = libktx_rs_sys::ktxTextureCreateInfo {
@@ -433,15 +437,28 @@ fn write_cubemap_to_ktx(cubemap_data: &[f32], cubemap_side: u32, cubemap_levels:
         numLevels: cubemap_levels,
         numLayers: 1,
         numFaces: 6,
-        generateMipmaps: true,
+        generateMipmaps: false,
         glInternalformat: GL_RGBA32F,
         vkFormat: VK_FORMAT_R32G32B32A32_SFLOAT,
         isArray: false,
         pDfd: ptr::null_mut(),
     };
-    let mut texture = ptr::null_mut();
+    let texture: *mut ktxTexture;
     unsafe{
-        ktxTexture2_Create(&mut create_info, ktxTextureCreateStorageEnum_KTX_TEXTURE_CREATE_ALLOC_STORAGE, &mut texture);
+        match ktx_version {
+            KtxVersion::_1 => {
+                let mut texture_ktx1 = ptr::null_mut();
+                ktxTexture1_Create(&mut create_info, ktxTextureCreateStorageEnum_KTX_TEXTURE_CREATE_ALLOC_STORAGE, &mut texture_ktx1);
+                texture = texture_ktx1 as *mut _;
+
+            }
+            KtxVersion::_2 => {
+                let mut texture_ktx2 = ptr::null_mut();
+                ktxTexture2_Create(&mut create_info, ktxTextureCreateStorageEnum_KTX_TEXTURE_CREATE_ALLOC_STORAGE, &mut texture_ktx2);
+                texture = texture_ktx2 as *mut _;
+            }
+        }
+
         let name = CString::new(output_file).unwrap();
         let vtbl = &*(*texture).vtbl;
         let mut prev_end = 0;
@@ -451,14 +468,25 @@ fn write_cubemap_to_ktx(cubemap_data: &[f32], cubemap_side: u32, cubemap_levels:
             for (face_idx, face) in cubemap_data[prev_end..]
                 .chunks(level_side as usize * level_side as usize * 4)
                 .enumerate()
+                .take(6)
             {
-                (vtbl.SetImageFromMemory.unwrap())(texture as *mut _, level, 0, face_idx as u32, face.as_ptr() as *const u8, face_size);
+                (vtbl.SetImageFromMemory.unwrap())(texture, level, 0, face_idx as u32, face.as_ptr() as *const u8, face_size);
             }
             prev_end += level_side as usize * level_side as usize * 4 * 6;
         }
-        (vtbl.WriteToNamedFile.unwrap())(texture as *mut _, name.as_ptr());
-        (vtbl.Destroy.unwrap())(texture as *mut _);
+        (vtbl.WriteToNamedFile.unwrap())(texture, name.as_ptr());
+        (vtbl.Destroy.unwrap())(texture);
     }
+}
+
+// Writes the data of a cubemap as downloaded from GPU to a KTX2
+fn write_cubemap_to_ktx1(cubemap_data: &[f32], cubemap_side: u32, cubemap_levels: u32, output_file: &str) {
+    write_cubemap_to_ktx(cubemap_data, cubemap_side, cubemap_levels, output_file, KtxVersion::_1)
+}
+
+// Writes the data of a cubemap as downloaded from GPU to a KTX2
+fn write_cubemap_to_ktx2(cubemap_data: &[f32], cubemap_side: u32, cubemap_levels: u32, output_file: &str) {
+    write_cubemap_to_ktx(cubemap_data, cubemap_side, cubemap_levels, output_file, KtxVersion::_2)
 }
 
 // Writes the data of a cubemap as downloaded from GPU to a DDS
@@ -890,8 +918,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .default_value("ktx")
                 .short('f')
                 // .value_names(["dds", "ktx"])
-                .value_parser(["ktx", "dds", "png"])
-                .default_value("ktx")
+                .value_parser(["ktx1", "ktx2", "dds", "png"])
+                .default_value("ktx2")
                 .help("Output cubemaps format")
         )
         .get_matches();
@@ -994,7 +1022,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .save("skybox.dds")?;
         }
 
-        "ktx" => write_cubemap_to_ktx(&env_map_data, cubemap_side, 1, "skybox.ktx"),
+        "ktx1" => write_cubemap_to_ktx1(&env_map_data, cubemap_side, 1, "skybox.ktx"),
+
+        "ktx2" => write_cubemap_to_ktx2(&env_map_data, cubemap_side, 1, "skybox.ktx"),
 
         _ => unreachable!()
     }
@@ -1033,7 +1063,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         "dds" => write_cubemap_to_dds(&radiance_data, cubemap_side, radiance.mip_level_count(), "radiance.dds")?,
 
-        "ktx" => write_cubemap_to_ktx(&radiance_data, cubemap_side, radiance.mip_level_count(), "radiance.ktx"),
+        "ktx1" => write_cubemap_to_ktx1(&radiance_data, cubemap_side, radiance.mip_level_count(), "radiance.ktx"),
+
+        "ktx2" => write_cubemap_to_ktx2(&radiance_data, cubemap_side, radiance.mip_level_count(), "radiance.ktx"),
 
         _ => unreachable!()
     }
@@ -1066,7 +1098,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         "dds" => write_cubemap_to_dds(&irradiance_data, cubemap_side, 1, "irradiance.dds")?,
 
-        "ktx" => write_cubemap_to_ktx(&irradiance_data, cubemap_side, 1, "irradiance.ktx"),
+        "ktx1" => write_cubemap_to_ktx1(&irradiance_data, cubemap_side, 1, "irradiance.ktx"),
+
+        "ktx2" => write_cubemap_to_ktx2(&irradiance_data, cubemap_side, 1, "irradiance.ktx"),
 
         _ => unreachable!()
     }
