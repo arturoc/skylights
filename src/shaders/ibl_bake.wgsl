@@ -1,44 +1,7 @@
-//------------------------------------------------------------------------------------//
-//                                                                                    //
-//    ._____________.____   __________         __                                     //
-//    |   \______   \    |  \______   \_____  |  | __ ___________                     //
-//    |   ||    |  _/    |   |    |  _/\__  \ |  |/ // __ \_  __ \                    //
-//    |   ||    |   \    |___|    |   \ / __ \|    <\  ___/|  | \/                    //
-//    |___||______  /_______ \______  /(____  /__|_ \\___  >__|                       //
-//                \/        \/      \/      \/     \/    \/                           //
-//                                                                                    //
-//    IBLBaker is provided under the MIT License(MIT)                                 //
-//    IBLBaker uses portions of other open source software.                           //
-//    Please review the LICENSE file for further details.                             //
-//                                                                                    //
-//    Copyright(c) 2014 Matt Davidson                                                 //
-//    Port to WGSL Copyright Arturo Castro Prieto                                     //
-//                                                                                    //
-//    Permission is hereby granted, free of charge, to any person obtaining a copy    //
-//    of this software and associated documentation files(the "Software"), to deal    //
-//    in the Software without restriction, including without limitation the rights    //
-//    to use, copy, modify, merge, publish, distribute, sublicense, and / or sell     //
-//    copies of the Software, and to permit persons to whom the Software is           //
-//    furnished to do so, subject to the following conditions :                       //
-//                                                                                    //
-//    1. Redistributions of source code must retain the above copyright notice,       //
-//    this list of conditions and the following disclaimer.                           //
-//    2. Redistributions in binary form must reproduce the above copyright notice,    //
-//    this list of conditions and the following disclaimer in the                     //
-//    documentation and / or other materials provided with the distribution.          //
-//    3. Neither the name of the copyright holder nor the names of its                //
-//    contributors may be used to endorse or promote products derived                 //
-//    from this software without specific prior written permission.                   //
-//                                                                                    //
-//    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR      //
-//    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,        //
-//    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.IN NO EVENT SHALL THE      //
-//    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER          //
-//    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,   //
-//    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN       //
-//    THE SOFTWARE.                                                                   //
-//                                                                                    //
-//------------------------------------------------------------------------------------//
+// Ported from https://github.com/KhronosGroup/glTF-Sample-Viewer/blob/main/source/shaders/ibl_filtering.frag
+// Copyright Khronos Group
+// Apache license 2.0
+// Port WGSL Copyright Arturo Castro Prieto
 
 @group(0)
 @binding(0)
@@ -74,6 +37,9 @@ const BRIGHTNESS_CORRECTION: f32 = 1.;
 const SATURATION_CORRECTION: f32 = 1.;
 const HUE_CORRECTION = 0.;
 const ROOT: vec3<f32> = vec3(0.57735, 0.57735, 0.57735);
+
+const LAMBERT = 0;
+const GGX = 1;
 
 fn face_2d_mapping(face: u32) -> array<vec3f, 3> {
     //XPOS face
@@ -167,66 +133,101 @@ fn hammersley(i: u32, n: u32) -> vec2f {
      return vec2(f32(i)/f32(n), radicalInverse_VdC(i));
 }
 
-fn importance_sample_ggx(e: vec2f, linear_roughness: f32, n: vec3f ) -> vec3f{
-	let m = linear_roughness;
+// TBN generates a tangent bitangent normal coordinate frame from the normal
+// (the normal must be normalized)
+fn generate_tbn(normal: vec3f) -> mat3x3<f32> {
+    var bitangent = vec3(0.0, 1.0, 0.0);
 
-	let phi = 2. * M_PI * e.x;
-	let cos_theta = sqrt( (1. - e.y) / ( 1. + (m*m - 1.) * e.y ) );
-	let sin_theta = sqrt( 1. - cos_theta * cos_theta );
+    let NdotUp = dot(normal, vec3(0.0, 1.0, 0.0));
+    let epsilon = 0.0000001;
+    if (1.0 - abs(NdotUp) <= epsilon)
+    {
+        // Sampling +Y or -Y, so we need a more robust bitangent.
+        if (NdotUp > 0.0)
+        {
+            bitangent = vec3(0.0, 0.0, 1.0);
+        }
+        else
+        {
+            bitangent = vec3(0.0, 0.0, -1.0);
+        }
+    }
 
-	let h = vec3(
-		sin_theta * cos( phi ),
-		sin_theta * sin( phi ),
-		cos_theta
-	);
+    let tangent = normalize(cross(bitangent, normal));
+    bitangent = cross(normal, tangent);
 
-	var up_vector = vec3(1.,0.,0.);
-	if (abs(n.z) < 0.999) {
-		up_vector = vec3(0.,0.,1.);
-	}
-	let tangent_x = normalize(cross( up_vector, n ));
-	let tangent_y = cross( n, tangent_x );
-	// tangent to world space
-	return normalize(tangent_x * h.x + tangent_y * h.y + n * h.z);
+    return mat3x3(tangent, bitangent, normal);
 }
 
-fn importance_sample_diffuse(e: vec2f, n: vec3f) -> vec3f {
-    let cos_theta = 1.0 - e.y;
-    let sin_theta = sqrt(1.0-cos_theta*cos_theta);
-	let phi = 2. * M_PI * e.x;
-
-	let h = vec3(
-		sin_theta * cos( phi ),
-		sin_theta * sin( phi ),
-		cos_theta
-	);
-
-	var up_vector = vec3(1.,0.,0.);
-	if (abs(n.z) < 0.999) {
-		up_vector = vec3(0.,0.,1.);
-	}
-	let tangent_x = normalize( cross( up_vector, n ) );
-	let tangent_y = cross( n, tangent_x );
-
-    return tangent_x * h.x + tangent_y * h.y + n * h.z;
+struct MicrofacetDistributionSample {
+	phi: f32,
+	cos_theta: f32,
+	sin_theta: f32,
+	pdf: f32,
 }
 
 fn d_ggx(linear_roughness: f32, ndh: f32) -> f32{
-    let m2 = linear_roughness;
-    let d = (ndh * m2 - ndh) * ndh + 1.0;
-    return m2 / (M_PI * d * d);
+	let a = ndh * linear_roughness;
+    let k = linear_roughness / (1.0 - ndh * ndh + a * a);
+    return k * k * (1.0 / M_PI);
+}
 
-	// Schlick
-	// let r2 = linear_roughness;
-	// let ndh2 = ndh * ndh;
-	// let a = 1. / (M_PI * r2 * ndh2 * ndh2);
-	// let b = exp((ndh2 - 1.) / r2 * ndh2);
-	// return a * b;
+fn importance_sample_ggx(e: vec2f, linear_roughness: f32, n: vec3f ) -> MicrofacetDistributionSample {
+	let m = linear_roughness;
 
-	// Smith
-	// let ndh2 = ndh * ndh;
-	// let r2 = linear_roughness;
-	// return r2 / pow(ndh2 * (r2 - 1.) + 1., 2.);
+	let phi = 2. * M_PI * e.x;
+	let cos_theta = saturate(sqrt( (1. - e.y) / ( 1. + (m*m - 1.) * e.y ) ));
+	let sin_theta = sqrt( 1. - cos_theta * cos_theta );
+
+	let pdf = d_ggx(linear_roughness, cos_theta);
+
+	return MicrofacetDistributionSample (
+		phi,
+		cos_theta,
+		sin_theta,
+		pdf
+	);
+}
+
+fn importance_sample_diffuse(e: vec2f, n: vec3f) -> MicrofacetDistributionSample {
+	// Cosine weighted hemisphere sampling
+    // http://www.pbr-book.org/3ed-2018/Monte_Carlo_Integration/2D_Sampling_with_Multidimensional_Transformations.html#Cosine-WeightedHemisphereSampling
+    let cos_theta = sqrt(1.0 - e.y);
+    let sin_theta = sqrt(e.y); // equivalent to `sqrt(1.0 - cosTheta*cosTheta)`;
+	let phi = 2. * M_PI * e.x;
+
+	let pdf = cos_theta / M_PI;
+
+
+	return MicrofacetDistributionSample (
+		phi,
+		cos_theta,
+		sin_theta,
+		pdf
+	);
+}
+
+fn importance_sample(sample: u32, linear_roughness: f32, n: vec3f, distribution: i32) -> vec4f {
+	let xi = hammersley(sample, NUM_SAMPLES);
+	var importance_sample: MicrofacetDistributionSample;
+	if(distribution==LAMBERT) {
+		importance_sample = importance_sample_diffuse(xi, n);
+	}else if (distribution == GGX) {
+		importance_sample = importance_sample_ggx(xi, linear_roughness, n);
+	}else{
+		// unrecheable
+		importance_sample = importance_sample_ggx(xi, linear_roughness, n);
+	}
+
+
+	let h = vec3(
+		importance_sample.sin_theta * cos( importance_sample.phi ),
+		importance_sample.sin_theta * sin( importance_sample.phi ),
+		importance_sample.cos_theta
+	);
+
+	let tbn = generate_tbn(n);
+	return vec4(tbn * h, importance_sample.pdf);
 }
 
 fn quaternion_to_matrix(quat: vec4f) -> mat3x3<f32> {
@@ -267,6 +268,22 @@ fn correction(color: vec3f) -> vec3f {
 	return hdr;
 }
 
+fn compute_lod(pdf: f32) -> f32 {
+	let resolution = f32(textureDimensions(envmap).x);
+
+	// Compute Lod using inverse solid angle and pdf.
+	// From Chapter 20.4 Mipmap filtered samples in GPU Gems 3.
+	// http://http.developer.nvidia.com/GPUGems3/gpugems3_ch20.html
+	// let sa_texel = 4.0 * M_PI / (6.0 * resolution * resolution);
+	// let sa_sample = 1.0 / (f32(NUM_SAMPLES) * pdf + 0.0001);
+	// let lod = 0.5 * log2(sa_sample / sa_texel);
+
+	// https://cgg.mff.cuni.cz/~jaroslav/papers/2007-sketch-fis/Final_sap_0073.pdf
+	let lod = 0.5 * log2( 6.0 * resolution * resolution / (f32(NUM_SAMPLES) * pdf));
+
+	return lod;
+}
+
 @compute
 @workgroup_size(1)
 fn radiance(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -280,21 +297,16 @@ fn radiance(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
 	var total_radiance = vec4(0.);
 	for(var sample = 0u; sample < NUM_SAMPLES; sample += 1u){
-		let xi = hammersley(sample, NUM_SAMPLES);
-		let h = importance_sample_ggx(xi, linear_roughness, n);
-	    let l = normalize(2. * dot(n, h) * h - n);
-		let ndl = max(dot(n, l), 0.);
-		let ndh = dot(n, h);
-		let hdv = dot(h, v);
+		let importance_sample = importance_sample(sample, linear_roughness, n, GGX);
+		let h = importance_sample.xyz;
+		let pdf = importance_sample.w;
+		let l = normalize(reflect(-v, h));
+		let ndl = dot(n, l);
 
 		if (ndl > 0.){
-			let D = d_ggx(linear_roughness, ndh);
-			let pdf = (D * ndh / (4.0 * ndh)) + 0.0001;
-			let sa_texel = 4.0 * M_PI / (6.0 * resolution * resolution);
-			let sa_sample = 1.0 / (f32(NUM_SAMPLES) * pdf + 0.0001);
 			var mip_level = 0.0;
 			if (roughness != 0.0) {
-				mip_level = 0.5 * log2(sa_sample / sa_texel);
+				mip_level = compute_lod(pdf);
 			}
 	        let pointRadiance = correction(textureSampleLevel(envmap, envmap_sampler, l, mip_level).rgb);
 	        total_radiance += vec4(pointRadiance * ndl, ndl);
@@ -327,23 +339,13 @@ fn irradiance(@builtin(global_invocation_id) global_id: vec3<u32>){
 
 	var total_irradiance = vec4(0.);
 	for(var sample = 0u; sample < NUM_SAMPLES; sample += 1u){
-		let xi = hammersley(sample, NUM_SAMPLES);
-		let h = importance_sample_diffuse(xi, n);
-	    let l = normalize(2. * dot(n, h) * h - n);
-		let ndl = max(dot(n, l), 0.);
+		let importance_sample = importance_sample(sample, 0., n, LAMBERT);
+		let h = importance_sample.xyz;
+		let pdf = importance_sample.w;
 
-		if (ndl > 0.){
-			// Compute Lod using inverse solid angle and pdf.
-            // From Chapter 20.4 Mipmap filtered samples in GPU Gems 3.
-            // http://http.developer.nvidia.com/GPUGems3/gpugems3_ch20.html
-			let pdf = max(0.0, dot(n, l) * M_INV_PI);
-			let solidAngleTexel = 4.0 * M_PI / (6.0 * resolution * resolution);
-            let solidAngleSample = 1.0 / (f32(NUM_SAMPLES) * pdf + 0.0001);
-            let lod = 0.5 * log2(solidAngleSample / solidAngleTexel);
-
-	        let diffuseSample = correction(textureSampleLevel(envmap, envmap_sampler, h, lod).rgb);
-	        total_irradiance += vec4(diffuseSample * ndl, ndl);
-	    }
+		let lod = compute_lod(pdf);
+		let diffuseSample = correction(textureSampleLevel(envmap, envmap_sampler, h, lod).rgb);
+		total_irradiance += vec4(diffuseSample, 1.);
 	}
 
 	var color = vec4(0.);
