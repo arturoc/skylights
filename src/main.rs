@@ -427,6 +427,7 @@ enum KtxVersion {
 }
 
 fn write_cubemap_to_ktx(cubemap_data: &[f32], cubemap_side: u32, cubemap_levels: u32, output_file: &str, ktx_version: KtxVersion) {
+    let c_output_file = CString::new(output_file).unwrap();
     const GL_RGBA32F: u32 = 0x8814;
     const VK_FORMAT_R32G32B32A32_SFLOAT: u32 = 109;
     let mut create_info = libktx_rs_sys::ktxTextureCreateInfo {
@@ -459,7 +460,6 @@ fn write_cubemap_to_ktx(cubemap_data: &[f32], cubemap_side: u32, cubemap_levels:
             }
         }
 
-        let name = CString::new(output_file).unwrap();
         let vtbl = &*(*texture).vtbl;
         let mut prev_end = 0;
         for level in 0..cubemap_levels {
@@ -474,9 +474,43 @@ fn write_cubemap_to_ktx(cubemap_data: &[f32], cubemap_side: u32, cubemap_levels:
             }
             prev_end += level_side as usize * level_side as usize * 4 * 6;
         }
-        (vtbl.WriteToNamedFile.unwrap())(texture, name.as_ptr());
+        (vtbl.WriteToNamedFile.unwrap())(texture, c_output_file.as_ptr());
         (vtbl.Destroy.unwrap())(texture);
     }
+
+    // Text ktx is saving correctly
+    // use libktx_rs_sys::{ktxTexture_CreateFromNamedFile, ktxTextureCreateFlagBits_KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, ktxTexture_GetData};
+    // let mut texture = ptr::null_mut();
+    // unsafe{
+    //     let result = ktxTexture_CreateFromNamedFile(
+    //         c_output_file.as_ptr(),
+    //         ktxTextureCreateFlagBits_KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+    //         &mut texture
+    //     );
+
+    //     let layer = 0;
+    //     let vtbl = &*(*texture).vtbl;
+    //     for level in 0..cubemap_levels {
+    //         let level_side = (cubemap_side >> level) as usize;
+    //         for face_idx in 0..6 {
+    //             let mut offset  = 0;
+    //             let result = (vtbl.GetImageOffset.unwrap())(texture, level, layer, face_idx, &mut offset);
+    //             let face_data = ktxTexture_GetData(texture).offset(offset as isize);
+    //             let face_data = std::slice::from_raw_parts(face_data as *const f32, level_side * level_side * 4);
+    //             let face = face_data.chunks(4)
+    //                 .flat_map(|c| [
+    //                     (c[0] * u16::MAX as f32) as u16,
+    //                     (c[1] * u16::MAX as f32) as u16,
+    //                     (c[2] * u16::MAX as f32) as u16
+    //                 ]).collect::<Vec<_>>();
+    //             dbg!(level_side, face.len() / 3, face_data.len() / 4, level_side * level_side);
+    //             let img: ImageBuffer<Rgb<u16>, _> = ImageBuffer::from_vec(level_side as u32, level_side as u32, face).unwrap();
+    //             img.save(format!("{output_file}_face{}_level{}.png", face_idx, level)).unwrap();
+    //         }
+    //     }
+
+    //     (vtbl.Destroy.unwrap())(texture);
+    // }
 }
 
 // Writes the data of a cubemap as downloaded from GPU to a KTX2
