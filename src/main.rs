@@ -2,7 +2,7 @@ use std::{borrow::Cow, error::Error, mem::size_of, ptr, ffi::CString, cell::Once
 use bytemuck::{Pod, Zeroable};
 use image::{DynamicImage, ImageBuffer, Rgb};
 use libktx_rs_sys::{ktxTexture2_Create, ktxTextureCreateStorageEnum_KTX_TEXTURE_CREATE_ALLOC_STORAGE, ktxTexture1_Create, ktxTexture};
-use wgpu::{util::{DeviceExt, BufferInitDescriptor}, TextureDescriptor, TextureFormat, TextureUsages, Origin3d, ImageDataLayout, ImageCopyTexture};
+use wgpu::{util::{DeviceExt, BufferInitDescriptor}, TextureDescriptor, TextureFormat, TextureUsages, Origin3d, ImageDataLayout, ImageCopyTexture, BindGroup};
 use async_std::{prelude::*, fs::File, task::spawn_blocking, path::Path};
 
 static RE: &str = r"const[ \t]+([A-Z][A-Z0-9_]*)[ \t]*(:)?[ \t]*([^ \t=]+)?[ \t]*=[ \t]*([^ \t;]*);";
@@ -500,6 +500,77 @@ async fn download_cubemap(
     Some(result)
 }
 
+// Downloads the data of a texture in GPU memory to a Vec<f32>. It returns the data
+// and the number of levels that it downloaded
+async fn download_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+) -> Option<Vec<f32>>
+{
+    let mut result = vec![];
+
+    // Will copy data from texture on GPU to staging buffer on CPU.
+    let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: texture.width() as u64 * texture.height() as u64 * 4 * size_of::<f32>() as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+    let bytes_per_row = texture.width() * 4 * size_of::<f32>() as u32;
+    encoder.copy_texture_to_buffer(
+        wgpu::ImageCopyTextureBase {
+            texture,
+            mip_level: 0,
+            origin: Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All
+        },
+        wgpu::ImageCopyBufferBase{
+            buffer: &staging_buffer,
+            layout: ImageDataLayout{
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(texture.height()),
+            }
+        },
+        texture.size()
+    );
+
+    // Submits command encoder for processing
+    queue.submit(Some(encoder.finish()));
+
+
+    // Note that we're not calling `.await` here.
+    let buffer_slice = staging_buffer.slice(..);
+    // Sets the buffer up for mapping, sending over the result of the mapping back to us when it is finished.
+    let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
+    buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+
+    // Poll the device in a blocking manner so that our future resolves.
+    device.poll(wgpu::Maintain::Wait);
+
+    // Awaits until `buffer_future` can be read from
+    if let Some(Ok(())) = receiver.receive().await {
+        // Gets contents of buffer
+        let data = buffer_slice.get_mapped_range();
+        result.extend_from_slice(bytemuck::cast_slice(&data));
+
+        // With the current interface, we have to make sure all mapped views are
+        // dropped before we unmap the buffer.
+        drop(data);
+        staging_buffer.unmap(); // Unmaps buffer from memory
+    }else{
+        return None
+    }
+
+    // Returns data from buffer
+    Some(result)
+}
+
 enum KtxVersion {
     _1,
     _2,
@@ -962,13 +1033,6 @@ async fn irradiance(
         ..Default::default()
     });
 
-    #[repr(C)]
-    #[derive(Pod, Copy, Clone, Zeroable)]
-    struct RadianceData {
-        mip_level: u32,
-        max_mip: u32,
-    }
-
     println!("Processing irradiance");
 
     // A command encoder executes one or many pipelines.
@@ -1016,6 +1080,117 @@ async fn irradiance(
     Some(output)
 }
 
+// Calculates the GGX LUT
+async fn ggx_lut(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    side: u32,
+    num_samples: u16,
+) -> Option<wgpu::Texture> {
+    static LUT_SRC: &str = include_str!("shaders/ggx_lut.wgsl");
+    let lut_src = set_constants(&LUT_SRC, &[("NUM_SAMPLES", Cow::Owned(num_samples.to_string() + "u"))]);
+    // Loads the shader from WGSL
+    let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&lut_src)),
+    });
+
+    let output = device.create_texture(
+        &TextureDescriptor {
+            label: Some("LUT"),
+            size: wgpu::Extent3d{ width: side, height: side, depth_or_array_layers: 1},
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | TextureUsages::COPY_SRC,
+            view_formats: &[]
+        },
+    );
+
+    let output_view = output.create_view(&wgpu::TextureViewDescriptor {
+        label: None,
+        dimension: Some(wgpu::TextureViewDimension::D2),
+        ..wgpu::TextureViewDescriptor::default()
+    });
+
+    // A bind group defines how buffers are accessed by shaders.
+    // It is to WebGPU what a descriptor set is to Vulkan.
+    // `binding` here refers to the `binding` of a buffer in the shader (`layout(set = 0, binding = 0) buffer`).
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: TextureFormat::Rgba32Float,
+                    view_dimension: wgpu::TextureViewDimension::D2
+                },
+                count: None,
+            },
+        ],
+    });
+
+    // A pipeline specifies the operation of a shader
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("LUT Layout"),
+        bind_group_layouts: &[
+            &bind_group_layout
+        ],
+        push_constant_ranges: &[],
+    });
+
+
+    // Instantiates the pipeline.
+    let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&pipeline_layout),
+        module: &cs_module,
+        entry_point: "compute_lut",
+    });
+
+    println!("Processing lut");
+
+    // A command encoder executes one or many pipelines.
+    // It is to WebGPU what a command buffer is to Vulkan.
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+    // Instantiates the bind group, once again specifying the binding of buffers.
+    // let bind_group_layout = compute_pipeline.get_bind_group_layout(2);
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("LUT BindGroup"),
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&output_view),
+            },
+        ],
+    });
+
+    {
+        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Compute irradiance"),
+        });
+        cpass.set_pipeline(&compute_pipeline);
+        cpass.set_bind_group(0, &bind_group, &[]);
+        cpass.insert_debug_marker("Compute GGX LUT");
+        cpass.dispatch_workgroups(side, side, 1); // Number of cells to run, the (x,y,z) size of item being processed
+    }
+
+    // Submits command encoder for processing
+    queue.submit(Some(encoder.finish()));
+
+    // Poll the device in a blocking manner so that our future resolves.
+    device.poll(wgpu::Maintain::Wait);
+
+    Some(output)
+}
+
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
@@ -1023,7 +1198,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args = clap::Command::new("skylights")
         .arg(
             clap::Arg::new("input-image")
-                .required(true)
+                .required_unless_present("lut")
                 .help("Environment map to process")
         )
         .arg(
@@ -1081,44 +1256,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .short('u')
                 .help("Corrects the hue of the final color in degrees. [possible values: 0..360]")
         )
+        .arg(clap::arg!(--lut -l "Computes GGX LUT"))
         .get_matches();
 
-    let input_image: &String = args.get_one("input-image").unwrap();
-    if !Path::new(input_image).exists().await {
-        Err(format!("Input image file \"{}\" doesn't exist", input_image))?
-    }
+    let input_image: Option<&String> = args.get_one("input-image");
 
     let cubemap_side = args.get_one::<String>("cubemap-side")
         .unwrap()
         .parse()
         .expect("cubemap-side must be a numeric value"); // TODO: can be enforced in clap?
-    let output_format = args.get_one::<String>("output-format").unwrap().as_str();
-    let bake_parameters = BakeParameters {
-        num_samples: *args.get_one("num-samples").unwrap(),
-        strength: *args.get_one("strength").unwrap(),
-        contrast_correction: *args.get_one("contrast").unwrap(),
-        brightness_correction: *args.get_one("brightness").unwrap(),
-        saturation_correction: *args.get_one("saturation").unwrap(),
-        hue_correction: *args.get_one("hue").unwrap(),
-    };
-
-
-    // Load environment map
-    let mut img_file = File::open(input_image).await?;
-    let mut img_buffer = vec![];
-    img_file.read_to_end(&mut img_buffer).await?;
-    let env_map = spawn_blocking(move || {
-        // image::load_from_memory(&img_buffer)
-        libhdr::Hdr::from_bytes(&img_buffer)
-    }).await?;
-    let rgba_env_map = env_map.rgb()
-        .chunks(3)
-        .flat_map(|c| [c[0], c[1], c[2], 1.])
-        .collect();
-    let env_map = DynamicImage::ImageRgba32F(
-        ImageBuffer::from_vec(env_map.width(), env_map.height(), rgba_env_map)
-            .ok_or_else(|| "Couldn't transform hdr into dynamic image")?
-    );
 
     // Instantiates instance of WebGPU
     let instance = wgpu::Instance::default();
@@ -1154,6 +1300,58 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .await
         .unwrap();
+
+    if *args.get_one("lut").unwrap() {
+        let num_samples = *args.get_one("num-samples").unwrap();
+        let lut = ggx_lut(&device, &queue, cubemap_side, num_samples).await.unwrap();
+
+        let lut_data = download_texture(&device, &queue, &lut).await.unwrap();
+        let data_u16 = lut_data.chunks(4)
+            .flat_map(|c| [
+                (c[0] * u16::MAX as f32) as u16,
+                (c[1] * u16::MAX as f32) as u16,
+                (c[2] * u16::MAX as f32) as u16
+            ]).collect();
+        let img: ImageBuffer<Rgb<u16>, _> = ImageBuffer::from_vec(cubemap_side, cubemap_side, data_u16).unwrap();
+        img.save("ggx_lut.png").unwrap();
+
+        if input_image.is_none() {
+            return Ok(());
+        }
+    }
+
+    let input_image: &String = input_image.unwrap();
+    if !Path::new(input_image).exists().await {
+        Err(format!("Input image file \"{}\" doesn't exist", input_image))?
+    }
+
+    let output_format = args.get_one::<String>("output-format").unwrap().as_str();
+    let bake_parameters = BakeParameters {
+        num_samples: *args.get_one("num-samples").unwrap(),
+        strength: *args.get_one("strength").unwrap(),
+        contrast_correction: *args.get_one("contrast").unwrap(),
+        brightness_correction: *args.get_one("brightness").unwrap(),
+        saturation_correction: *args.get_one("saturation").unwrap(),
+        hue_correction: *args.get_one("hue").unwrap(),
+    };
+
+
+    // Load environment map
+    let mut img_file = File::open(input_image).await?;
+    let mut img_buffer = vec![];
+    img_file.read_to_end(&mut img_buffer).await?;
+    let env_map = spawn_blocking(move || {
+        // image::load_from_memory(&img_buffer)
+        libhdr::Hdr::from_bytes(&img_buffer)
+    }).await?;
+    let rgba_env_map = env_map.rgb()
+        .chunks(3)
+        .flat_map(|c| [c[0], c[1], c[2], 1.])
+        .collect();
+    let env_map = DynamicImage::ImageRgba32F(
+        ImageBuffer::from_vec(env_map.width(), env_map.height(), rgba_env_map)
+            .ok_or_else(|| "Couldn't transform hdr into dynamic image")?
+    );
 
     // Convert equirectangular to cubemap
     let env_map = equirectangular_to_cubemap(&device, &queue, &env_map, cubemap_side).await.unwrap();
