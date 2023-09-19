@@ -15,8 +15,14 @@ Arguments:
   <input-image>  Environment map to process
 
 Options:
-  -s <cubemap-side>       Side of the output cubemaps in pixels [default: 1024]
-  -f <output-format>      Output cubemaps format [default: ktx] [possible values: ktx, dds, png]
+  -x <cubemap-side>       Side of the output cubemaps in pixels [default: 1024]
+  -f <output-format>      Output cubemaps format [default: ktx2] [possible values: ktx1, ktx2, dds, png]
+  -n <num-samples>        Number of samples per pixel when calculating radiance and irradiance maps [default: 128]
+  -m <strength>           Scales the final baked value in the radiance and irradiance maps [default: 1]
+  -c <contrast>           Corrects the contrast of the final color [default: 1]
+  -b <brightness>         Corrects the brightness of the final color [default: 1]
+  -s <saturation>         Corrects the saturation of the final color 0: grayscale and 1: original color [default: 1]
+  -u <hue>                Corrects the hue of the final color in degrees. [possible values: 0..360] [default: 0]
   -h, --help              Print help
 ```
 

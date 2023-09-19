@@ -1,9 +1,88 @@
-use std::{borrow::Cow, error::Error, mem::size_of, ptr, ffi::CString};
+use std::{borrow::Cow, error::Error, mem::size_of, ptr, ffi::CString, cell::OnceCell};
 use bytemuck::{Pod, Zeroable};
 use image::{DynamicImage, ImageBuffer, Rgb};
-use libktx_rs_sys::{ktxTexture2_Create, ktxTextureCreateStorageEnum_KTX_TEXTURE_CREATE_ALLOC_STORAGE};
+use libktx_rs_sys::{ktxTexture2_Create, ktxTextureCreateStorageEnum_KTX_TEXTURE_CREATE_ALLOC_STORAGE, ktxTexture1_Create, ktxTexture};
 use wgpu::{util::{DeviceExt, BufferInitDescriptor}, TextureDescriptor, TextureFormat, TextureUsages, Origin3d, ImageDataLayout, ImageCopyTexture};
 use async_std::{prelude::*, fs::File, task::spawn_blocking, path::Path};
+
+static RE: &str = r"const[ \t]+([A-Z][A-Z0-9_]*)[ \t]*(:)?[ \t]*([^ \t=]+)?[ \t]*=[ \t]*([^ \t;]*);";
+const CONST_RE: OnceCell<regex::Regex> = OnceCell::new();
+
+fn set_constants(shader_src: &str, constants: &[(&str, Cow<str>)]) -> String {
+    let mut new_shader_src = String::new();
+    for line in shader_src.lines() {
+        let captures = CONST_RE
+            .get_or_init(|| regex::Regex::new(RE).unwrap())
+            .captures(line);
+        if let Some(captures) = captures {
+            let const_name = &captures[1];
+            let ty = captures.get(3).map(|ty| ty.as_str());
+            let new_value = constants.iter()
+                .find(|(name, _)| *name == const_name)
+                .map(|(_, value)| value);
+            if let Some(new_value) = new_value {
+                let new_line = if let Some(ty) = ty {
+                    format!("const {const_name}: {ty} = {new_value};")
+                }else{
+                    format!("const {const_name} = {new_value};")
+                };
+
+                new_shader_src += &new_line;
+            }else{
+                new_shader_src += line;
+            }
+        }else{
+            new_shader_src += line;
+        }
+        new_shader_src += "\n";
+    }
+
+    new_shader_src
+}
+
+#[test]
+fn test_constant_re() {
+    let captures = CONST_RE
+        .get_or_init(|| regex::Regex::new(RE).unwrap())
+        .captures("const ENVIRONMENT_SCALE: f32 = 2.0;");
+    assert!(captures.is_some());
+    let captures = captures.as_ref().unwrap();
+    assert_eq!(&captures[1], "ENVIRONMENT_SCALE");
+    assert_eq!(&captures[2], ":");
+    assert_eq!(&captures[3], "f32");
+    assert_eq!(&captures[4], "2.0");
+    let captures = CONST_RE
+        .get_or_init(|| regex::Regex::new(RE).unwrap())
+        .captures("const ENVIRONMENT_SCALE = 2.0;");
+    assert!(captures.is_some());
+    let captures = captures.as_ref().unwrap();
+    assert_eq!(&captures[1], "ENVIRONMENT_SCALE");
+    assert_eq!(captures.get(2), None);
+    assert_eq!(captures.get(3), None);
+    assert_eq!(&captures[4], "2.0");
+}
+
+struct BakeParameters {
+    num_samples: u16,
+    strength: f32,
+    contrast_correction: f32,
+    brightness_correction: f32,
+    saturation_correction: f32,
+    hue_correction: f32,
+}
+
+impl BakeParameters {
+    fn to_name_value(&self) -> [(&str, Cow<str>); 6] {
+        [
+            ("NUM_SAMPLES", Cow::Owned(format!("{}u", self.num_samples))),
+            ("STRENGTH", Cow::Owned(format!("{:?}", self.strength))),
+            ("CONTRAST_CORRECTION", Cow::Owned(format!("{:?}", self.contrast_correction))),
+            ("BRIGHTNESS_CORRECTION", Cow::Owned(format!("{:?}", self.brightness_correction))),
+            ("SATURATION_CORRECTION", Cow::Owned(format!("{:?}", self.saturation_correction))),
+            ("HUE_CORRECTION", Cow::Owned(format!("{:?}", self.hue_correction))),
+        ]
+    }
+}
 
 // Runs a compute shader that converts an equirectangular input image into a cubemap
 async fn equirectangular_to_cubemap(
@@ -582,11 +661,14 @@ async fn radiance(
     queue: &wgpu::Queue,
     env_map: &wgpu::Texture,
     cubemap_side: u32,
+    parameters: &BakeParameters,
 ) -> Option<wgpu::Texture> {
+    static RADIANCE_SRC: &str = include_str!("shaders/ibl_bake.wgsl");
+    let radiance_src = set_constants(RADIANCE_SRC, &parameters.to_name_value());
     // Loads the shader from WGSL
     let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
-        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/ibl_bake.wgsl"))),
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&radiance_src)),
     });
 
     let env_map_view = env_map.create_view(&wgpu::TextureViewDescriptor {
@@ -780,11 +862,14 @@ async fn irradiance(
     queue: &wgpu::Queue,
     env_map: &wgpu::Texture,
     cubemap_side: u32,
+    parameters: &BakeParameters,
 ) -> Option<wgpu::Texture> {
+    static IRRADIANCE_SRC: &str = include_str!("shaders/ibl_bake.wgsl");
+    let irradiance_src = set_constants(&IRRADIANCE_SRC, &parameters.to_name_value());
     // Loads the shader from WGSL
     let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
-        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/ibl_bake.wgsl"))),
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&irradiance_src)),
     });
 
     let env_map_view = env_map.create_view(&wgpu::TextureViewDescriptor {
@@ -944,17 +1029,57 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .arg(
             clap::Arg::new("cubemap-side")
                 .default_value("1024")
-                .short('s')
+                .short('x')
                 .help("Side of the output cubemaps in pixels")
         )
         .arg(
             clap::Arg::new("output-format")
-                .default_value("ktx")
                 .short('f')
-                // .value_names(["dds", "ktx"])
                 .value_parser(["ktx1", "ktx2", "dds", "png"])
                 .default_value("ktx2")
                 .help("Output cubemaps format")
+        )
+        .arg(
+            clap::Arg::new("num-samples")
+                .default_value("128")
+                .short('n')
+                .value_parser(clap::value_parser!(u16))
+                .help("Number of samples per pixel when calculating radiance and irradiance maps")
+        )
+        .arg(
+            clap::Arg::new("strength")
+                .default_value("1")
+                .short('m')
+                .value_parser(clap::value_parser!(f32))
+                .help("Scales the final baked value in the radiance and irradiance maps")
+        )
+        .arg(
+            clap::Arg::new("contrast")
+                .default_value("1")
+                .short('c')
+                .value_parser(clap::value_parser!(f32))
+                .help("Corrects the contrast of the final color")
+        )
+        .arg(
+            clap::Arg::new("brightness")
+                .default_value("1")
+                .short('b')
+                .value_parser(clap::value_parser!(f32))
+                .help("Corrects the brightness of the final color")
+        )
+        .arg(
+            clap::Arg::new("saturation")
+                .default_value("1")
+                .short('s')
+                .value_parser(clap::value_parser!(f32))
+                .help("Corrects the saturation of the final color 0: grayscale and 1: original color")
+        )
+        .arg(
+            clap::Arg::new("hue")
+                .default_value("0")
+                .value_parser(clap::value_parser!(f32))
+                .short('u')
+                .help("Corrects the hue of the final color in degrees. [possible values: 0..360]")
         )
         .get_matches();
 
@@ -968,6 +1093,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .parse()
         .expect("cubemap-side must be a numeric value"); // TODO: can be enforced in clap?
     let output_format = args.get_one::<String>("output-format").unwrap().as_str();
+    let bake_parameters = BakeParameters {
+        num_samples: *args.get_one("num-samples").unwrap(),
+        strength: *args.get_one("strength").unwrap(),
+        contrast_correction: *args.get_one("contrast").unwrap(),
+        brightness_correction: *args.get_one("brightness").unwrap(),
+        saturation_correction: *args.get_one("saturation").unwrap(),
+        hue_correction: *args.get_one("hue").unwrap(),
+    };
 
 
     // Load environment map
@@ -1067,7 +1200,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let env_map = generate_mipmaps(&device, &queue, &env_map);
 
     // Calculate radiance
-    let radiance = radiance(&device, &queue, &env_map, cubemap_side).await.unwrap();
+    let radiance = radiance(&device, &queue, &env_map, cubemap_side, &bake_parameters).await.unwrap();
 
     // Download radiance data
     let radiance_data = download_cubemap(&device, &queue, &radiance).await.unwrap();
@@ -1107,7 +1240,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 
     // Calculate irradiance
-    let irradiance = irradiance(&device, &queue, &env_map, cubemap_side).await.unwrap();
+    let irradiance = irradiance(&device, &queue, &env_map, cubemap_side, &bake_parameters).await.unwrap();
 
     // Download irradiance data
     let irradiance_data = download_cubemap(&device, &queue, &irradiance).await.unwrap();
