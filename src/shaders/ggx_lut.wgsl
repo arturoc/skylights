@@ -142,8 +142,8 @@ fn v_smith_ggx_correlated(ndv: f32, ndl: f32, linear_roughness: f32) -> f32 {
 @workgroup_size(1)
 fn compute_lut(@builtin(global_invocation_id) global_id: vec3<u32>) {
 	let resolution = vec2<f32>(textureDimensions(lut));
-	let ndv = f32(global_id.x) / resolution.x;
-    let roughness = f32(global_id.y) / resolution.y;
+	let ndv = (f32(global_id.x)  + 0.5) / resolution.x;
+    let roughness = (f32(global_id.y) + 0.5) / resolution.y;
 	let linear_roughness = roughness * roughness;
 
     // Compute spherical view vector: (sin(phi), 0, cos(phi))
@@ -166,7 +166,7 @@ fn compute_lut(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let importance_sample = importance_sample(sample, linear_roughness, n, GGX);
         let h = importance_sample.xyz;
         // float pdf = importanceSample.w;
-        let l = normalize(reflect(-v, h));
+        var l = normalize(reflect(-v, h));
 
         let ndl = saturate(l.z);
         let ndh = saturate(h.z);

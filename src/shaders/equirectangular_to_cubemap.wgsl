@@ -100,7 +100,7 @@ fn uv_face_to_cubemap_xyz(uv: vec2<f32>, face_idx: u32) -> vec3f {
 @compute
 @workgroup_size(1)
 fn equirectangular_to_cubemap(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let texel = vec2<f32>(global_id.xy) / f32(textureDimensions(cubemap_faces).x);
+    let texel = (vec2<f32>(global_id.xy) + vec2(0.5)) / f32(textureDimensions(cubemap_faces).x);
     let face = global_id.z;
     let v = uv_face_to_cubemap_xyz(texel, face);
     let uv = vec2<i32>(sample_spherical_map(v) * vec2<f32>(textureDimensions(equirectangular)));

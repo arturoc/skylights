@@ -288,7 +288,7 @@ fn compute_lod(pdf: f32) -> f32 {
 @workgroup_size(1)
 fn radiance(@builtin(global_invocation_id) global_id: vec3<u32>) {
 	let resolution = f32(textureDimensions(output_faces).x);
-    let texel = vec2<f32>(global_id.xy) / resolution;
+    let texel = (vec2<f32>(global_id.xy) + vec2(0.5)) / resolution;
     let face = global_id.z;
 	let roughness = f32(radiance_data.mip_level) / f32(radiance_data.max_mips - 1u);
 	let linear_roughness = roughness * roughness;
@@ -300,7 +300,8 @@ fn radiance(@builtin(global_invocation_id) global_id: vec3<u32>) {
 		let importance_sample = importance_sample(sample, linear_roughness, n, GGX);
 		let h = importance_sample.xyz;
 		let pdf = importance_sample.w;
-		let l = normalize(reflect(-v, h));
+		var l = normalize(reflect(-v, h));
+		l.y *= -1.;
 		let ndl = dot(n, l);
 
 		if (ndl > 0.){
@@ -332,7 +333,7 @@ fn radiance(@builtin(global_invocation_id) global_id: vec3<u32>) {
 @workgroup_size(1)
 fn irradiance(@builtin(global_invocation_id) global_id: vec3<u32>){
 	let resolution = f32(textureDimensions(output_faces).x);
-    let texel = vec2<f32>(global_id.xy) / resolution;
+    let texel = (vec2<f32>(global_id.xy) + vec2(0.5)) / resolution;
     let face = global_id.z;
     let v = uv_face_to_cubemap_xyz(texel, face);
 	let n = v;
@@ -340,7 +341,8 @@ fn irradiance(@builtin(global_invocation_id) global_id: vec3<u32>){
 	var total_irradiance = vec4(0.);
 	for(var sample = 0u; sample < NUM_SAMPLES; sample += 1u){
 		let importance_sample = importance_sample(sample, 0., n, LAMBERT);
-		let h = importance_sample.xyz;
+		var h = importance_sample.xyz;
+		h.y *= -1.;
 		let pdf = importance_sample.w;
 
 		let lod = compute_lod(pdf);
