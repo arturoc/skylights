@@ -1,160 +1,16 @@
-use std::{borrow::Cow, error::Error, mem::size_of, ptr, ffi::CString, cell::OnceCell};
+use std::borrow::Cow;
 use bytemuck::{Pod, Zeroable};
 use half::f16;
 use image::{DynamicImage, ImageBuffer, Rgb};
 use libktx_rs_sys::{ktxTexture2_Create, ktxTextureCreateStorageEnum_KTX_TEXTURE_CREATE_ALLOC_STORAGE, ktxTexture1_Create, ktxTexture};
-use num_traits::FromPrimitive;
 use wgpu::{util::{DeviceExt, BufferInitDescriptor}, TextureDescriptor, TextureFormat, TextureUsages, Origin3d, ImageDataLayout, ImageCopyTexture};
 use async_std::{prelude::*, fs::File, task::spawn_blocking, path::Path};
 use anyhow::{Context, Result};
+use shader_src::{set_constants, set_texture_format};
+use texture::{write_cubemap_to_dds, write_cubemap_to_ktx1, write_cubemap_to_ktx2};
 
-static RE_CONSTANTS: &str = r"const[ \t]+([A-Z][A-Z0-9_]*)[ \t]*(:)?[ \t]*([^ \t=]+)?[ \t]*=[ \t]*([^ \t;]*);";
-const CONST_RE: OnceCell<regex::Regex> = OnceCell::new();
-
-static RE_TEXTURE_STORAGE: &str = r"var ([a-z0-9_]+): texture_storage_([^<]+)[ \t]*<[ \t]*([^,]*)[ \t]*,[ \t]*(read|write)[ \t]*>;";
-const TEXTURE_STORAGE_RE: OnceCell<regex::Regex> = OnceCell::new();
-
-static RE_TEXTURE_CUBE: &str = r"var ([a-z0-9_]+): texture_cube[ \t]*<[ \t]*([^>]*)[ \t]*>;";
-const TEXTURE_CUBE_RE: OnceCell<regex::Regex> = OnceCell::new();
-
-#[test]
-fn test_texture_storage_re() {
-    let captures = TEXTURE_STORAGE_RE
-        .get_or_init(|| regex::Regex::new(RE_TEXTURE_STORAGE).unwrap())
-        .captures("var lut: texture_storage_2d<rgba32float, write>;");
-    assert!(captures.is_some());
-    let captures = captures.as_ref().unwrap();
-    assert_eq!(&captures[1], "lut");
-    assert_eq!(&captures[2], "2d");
-    assert_eq!(&captures[3], "rgba32float");
-    assert_eq!(&captures[4], "write");
-
-
-    let captures = TEXTURE_STORAGE_RE
-        .get_or_init(|| regex::Regex::new(RE_TEXTURE_STORAGE).unwrap())
-        .captures("var lut: texture_storage_2d_array<rgba32float, read>;");
-    assert!(captures.is_some());
-    let captures = captures.as_ref().unwrap();
-    assert_eq!(&captures[1], "lut");
-    assert_eq!(&captures[2], "2d_array");
-    assert_eq!(&captures[3], "rgba32float");
-    assert_eq!(&captures[4], "read");
-}
-
-#[test]
-fn test_texture_cube_re() {
-    let captures = TEXTURE_CUBE_RE
-        .get_or_init(|| regex::Regex::new(RE_TEXTURE_CUBE).unwrap())
-        .captures("var envmap: texture_cube<f32>;");
-    assert!(captures.is_some());
-    let captures = captures.as_ref().unwrap();
-    assert_eq!(&captures[1], "envmap");
-    assert_eq!(&captures[2], "f32");
-}
-
-
-#[test]
-fn test_constant_re() {
-    let captures = CONST_RE
-        .get_or_init(|| regex::Regex::new(RE_CONSTANTS).unwrap())
-        .captures("const ENVIRONMENT_SCALE: f32 = 2.0;");
-    assert!(captures.is_some());
-    let captures = captures.as_ref().unwrap();
-    assert_eq!(&captures[1], "ENVIRONMENT_SCALE");
-    assert_eq!(&captures[2], ":");
-    assert_eq!(&captures[3], "f32");
-    assert_eq!(&captures[4], "2.0");
-    let captures = CONST_RE
-        .get_or_init(|| regex::Regex::new(RE_CONSTANTS).unwrap())
-        .captures("const ENVIRONMENT_SCALE = 2.0;");
-    assert!(captures.is_some());
-    let captures = captures.as_ref().unwrap();
-    assert_eq!(&captures[1], "ENVIRONMENT_SCALE");
-    assert_eq!(captures.get(2), None);
-    assert_eq!(captures.get(3), None);
-    assert_eq!(&captures[4], "2.0");
-}
-
-const F16_U16_MAX: f16 = f16::from_f32_const(u16::MAX as f32);
-
-fn set_constants(shader_src: &str, constants: &[(&str, Cow<str>)]) -> String {
-    let mut new_shader_src = String::new();
-    for line in shader_src.lines() {
-        let captures = CONST_RE
-            .get_or_init(|| regex::Regex::new(RE_CONSTANTS).unwrap())
-            .captures(line);
-        if let Some(captures) = captures {
-            let const_name = &captures[1];
-            let ty = captures.get(3).map(|ty| ty.as_str());
-            let new_value = constants.iter()
-                .find(|(name, _)| *name == const_name)
-                .map(|(_, value)| value);
-            if let Some(new_value) = new_value {
-                let new_line = if let Some(ty) = ty {
-                    format!("const {const_name}: {ty} = {new_value};")
-                }else{
-                    format!("const {const_name} = {new_value};")
-                };
-
-                new_shader_src += &new_line;
-            }else{
-                new_shader_src += line;
-            }
-        }else{
-            new_shader_src += line;
-        }
-        new_shader_src += "\n";
-    }
-
-    new_shader_src
-}
-
-fn set_texture_format(shader_src: &str, texture_formats: &[(&str, wgpu::TextureFormat)]) -> String {
-    let mut new_shader_src = String::new();
-
-    for line in shader_src.lines() {
-        let captures = TEXTURE_STORAGE_RE
-            .get_or_init(|| regex::Regex::new(RE_TEXTURE_STORAGE).unwrap())
-            .captures(line);
-        if let Some(captures) = captures {
-            let texture_name = &captures[1];
-            let new_ty = texture_formats.iter()
-                .find(|(name, _)| *name == texture_name)
-                .map(|(_, format)| format.to_wgsl_storage_str());
-            if let Some(new_ty) = new_ty {
-                let tex_storage = &captures[2];
-                let rw = &captures[4];
-                let new_line = format!("var {texture_name}: texture_storage_{tex_storage}<{new_ty}, {rw}>;");
-                new_shader_src += &new_line;
-            }else{
-                new_shader_src += line;
-            }
-        }else{
-            let captures = TEXTURE_CUBE_RE
-                .get_or_init(|| regex::Regex::new(RE_TEXTURE_CUBE).unwrap())
-                .captures(line);
-
-            if let Some(captures) = captures {
-                let texture_name = &captures[1];
-                let new_ty = texture_formats.iter()
-                    .find(|(name, _)| *name == texture_name)
-                    .map(|(_, format)| format.to_wgsl_texture_str());
-                if let Some(new_ty) = new_ty {
-                    let ty = &captures[2];
-                    let new_line = format!("var {texture_name}: texture_cube<{new_ty}>;");
-                    new_shader_src += &new_line;
-                }else{
-                    new_shader_src += line;
-                }
-            }else{
-                new_shader_src += line;
-            }
-        }
-        new_shader_src += "\n";
-    }
-
-    new_shader_src
-}
+mod shader_src;
+mod texture;
 
 struct BakeParameters {
     num_samples: u16,
@@ -520,12 +376,12 @@ async fn download_cubemap(
     };
 
     for level in 0..cubemap.mip_level_count() {
-        println!("Downloading level {level}");
+        log::trace!("Downloading level {level}");
         let level_side = cubemap.width() >> level;
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let (cubemap, level) = if level_side * bytes_per_pixel < wgpu::COPY_BYTES_PER_ROW_ALIGNMENT {
-            println!("Copying from side: {level_side} to {}", aux_texture.as_ref().unwrap().width());
+            log::trace!("Copying from side: {level_side} to {}", aux_texture.as_ref().unwrap().width());
             encoder.copy_texture_to_texture(
                 wgpu::ImageCopyTextureBase {
                     texture: cubemap,
@@ -684,202 +540,6 @@ async fn download_texture(
     Some(result)
 }
 
-enum KtxVersion {
-    _1,
-    _2,
-}
-
-const GL_RGBA32F: u32 = 0x8814;
-const GL_RGBA16F: u32 = 0x881A;
-const VK_FORMAT_R32G32B32A32_SFLOAT: u32 = 109;
-const VK_FORMAT_R16G16B16A16_SFLOAT: u32 = 97;
-
-trait ToApi {
-    fn to_gl(self) -> u32;
-    fn to_vulkan(self) -> u32;
-    fn to_wgsl_storage_str(self) -> &'static str ;
-    fn to_wgsl_texture_str(self) -> &'static str;
-}
-
-impl ToApi for wgpu::TextureFormat {
-    fn to_gl(self) -> u32 {
-        match self {
-            wgpu::TextureFormat::Rgba32Float => GL_RGBA32F,
-            wgpu::TextureFormat::Rgba16Float => GL_RGBA16F,
-            _ => todo!()
-        }
-    }
-
-    fn to_vulkan(self) -> u32 {
-        match self {
-            wgpu::TextureFormat::Rgba32Float => VK_FORMAT_R32G32B32A32_SFLOAT,
-            wgpu::TextureFormat::Rgba16Float => VK_FORMAT_R16G16B16A16_SFLOAT,
-            _ => todo!()
-        }
-    }
-
-    fn to_wgsl_storage_str(self) -> &'static str {
-        match self {
-            wgpu::TextureFormat::Rgba32Float => "rgba32float",
-            wgpu::TextureFormat::Rgba16Float => "rgba16float",
-            _ => todo!()
-        }
-    }
-
-    fn to_wgsl_texture_str(self) -> &'static str {
-        match self {
-            wgpu::TextureFormat::Rgba32Float => "f32",
-            wgpu::TextureFormat::Rgba16Float => "f32",
-            _ => todo!()
-        }
-    }
-}
-
-fn write_cubemap_to_ktx(cubemap_data: &[u8], format: wgpu::TextureFormat, cubemap_side: u32, cubemap_levels: u32, output_file: &str, ktx_version: KtxVersion) {
-    let bytes_per_pixel = format
-        .block_size(Some(wgpu::TextureAspect::All))
-        .unwrap() as usize;
-
-    let c_output_file = CString::new(output_file).unwrap();
-    let mut create_info = libktx_rs_sys::ktxTextureCreateInfo {
-        baseWidth: cubemap_side,
-        baseHeight: cubemap_side,
-        baseDepth: 1,
-        numDimensions: 2,
-        numLevels: cubemap_levels,
-        numLayers: 1,
-        numFaces: 6,
-        generateMipmaps: false,
-        glInternalformat: format.to_gl(),
-        vkFormat: format.to_vulkan(),
-        isArray: false,
-        pDfd: ptr::null_mut(),
-    };
-    let texture: *mut ktxTexture;
-    unsafe{
-        match ktx_version {
-            KtxVersion::_1 => {
-                let mut texture_ktx1 = ptr::null_mut();
-                ktxTexture1_Create(&mut create_info, ktxTextureCreateStorageEnum_KTX_TEXTURE_CREATE_ALLOC_STORAGE, &mut texture_ktx1);
-                texture = texture_ktx1 as *mut ktxTexture;
-
-            }
-            KtxVersion::_2 => {
-                let mut texture_ktx2 = ptr::null_mut();
-                ktxTexture2_Create(&mut create_info, ktxTextureCreateStorageEnum_KTX_TEXTURE_CREATE_ALLOC_STORAGE, &mut texture_ktx2);
-                texture = texture_ktx2 as *mut ktxTexture;
-            }
-        }
-
-        let vtbl = &*(*texture).vtbl;
-        let mut prev_end = 0;
-        for level in 0..cubemap_levels {
-            let level_side = (cubemap_side >> level) as usize;
-            let face_size = level_side * level_side * bytes_per_pixel;
-            for (face_idx, face) in cubemap_data[prev_end..]
-                .chunks(level_side * level_side * bytes_per_pixel)
-                .enumerate()
-                .take(6)
-            {
-                (vtbl.SetImageFromMemory.unwrap())(texture, level, 0, face_idx as u32, face.as_ptr(), face_size);
-            }
-            prev_end += level_side * level_side * bytes_per_pixel * 6;
-        }
-        (vtbl.WriteToNamedFile.unwrap())(texture, c_output_file.as_ptr());
-        (vtbl.Destroy.unwrap())(texture);
-    }
-
-    // Text ktx is saving correctly
-    #[cfg(feature="test-ktx")]
-    {
-        use libktx_rs_sys::{ktxTexture_CreateFromNamedFile, ktxTextureCreateFlagBits_KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, ktxTexture_GetData};
-        let mut texture = ptr::null_mut();
-        unsafe{
-            let result = ktxTexture_CreateFromNamedFile(
-                c_output_file.as_ptr(),
-                ktxTextureCreateFlagBits_KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
-                &mut texture
-            );
-
-            let layer = 0;
-            let vtbl = &*(*texture).vtbl;
-            for level in 0..cubemap_levels {
-                let level_side = (cubemap_side >> level) as usize;
-                for face_idx in 0..6 {
-                    let mut offset  = 0;
-                    let result = (vtbl.GetImageOffset.unwrap())(texture, level, layer, face_idx, &mut offset);
-                    let face_data = ktxTexture_GetData(texture).offset(offset as isize);
-                    let face_data = std::slice::from_raw_parts(face_data as *const u8, level_side * level_side * bytes_per_pixel);
-                    let face = image_data_to_u16(face_data, format);
-                    let img: ImageBuffer<Rgb<u16>, _> = ImageBuffer::from_vec(level_side as u32, level_side as u32, face).unwrap();
-                    img.save(format!("{output_file}_face{}_level{}.png", face_idx, level)).unwrap();
-                }
-            }
-
-            (vtbl.Destroy.unwrap())(texture);
-        }
-    }
-}
-
-// Writes the data of a cubemap as downloaded from GPU to a KTX2
-fn write_cubemap_to_ktx1(cubemap_data: &[u8], format: wgpu::TextureFormat, cubemap_side: u32, cubemap_levels: u32, output_file: &str) {
-    write_cubemap_to_ktx(cubemap_data, format, cubemap_side, cubemap_levels, output_file, KtxVersion::_1)
-}
-
-// Writes the data of a cubemap as downloaded from GPU to a KTX2
-fn write_cubemap_to_ktx2(cubemap_data: &[u8], format: wgpu::TextureFormat, cubemap_side: u32, cubemap_levels: u32, output_file: &str) {
-    write_cubemap_to_ktx(cubemap_data, format, cubemap_side, cubemap_levels, output_file, KtxVersion::_2)
-}
-
-// Writes the data of a cubemap as downloaded from GPU to a DDS
-fn write_cubemap_to_dds(cubemap_data: &[u8], format: wgpu::TextureFormat, cubemap_side: u32, cubemap_levels: u32, output_file: &str) -> Result<(), dds::Error> {
-    let bytes_per_pixel = format
-        .block_size(Some(wgpu::TextureAspect::All))
-        .unwrap() as usize;
-
-    // Dds layout is transposed, each face with all it's levels but we have each level with
-    // all it's faces so we need to transpose first
-    let mut dds_data = vec![];
-    for face_idx in 0..6 {
-        let mut prev_end = 0;
-        for level in 0..cubemap_levels {
-            let level_side = (cubemap_side >> level) as usize;
-            let face = cubemap_data[prev_end..]
-                .chunks(level_side * level_side * bytes_per_pixel)
-                .skip(face_idx)
-                .next()
-                .unwrap();
-            dds_data.extend_from_slice(face);
-            prev_end += level_side * level_side * bytes_per_pixel * 6;
-        }
-    }
-
-    let ty = match format {
-        wgpu::TextureFormat::Rgba32Float => dds::Type::Float,
-        wgpu::TextureFormat::Rgba16Float => todo!(),
-        _ => todo!()
-    };
-
-    let dds = dds::Builder::new(cubemap_side as usize, cubemap_side as usize, dds::Format::RGBA, ty)
-        .is_cubemap_allfaces()
-        .has_mipmaps(cubemap_levels as usize)
-        .create(dds_data)?;
-    dds.save(output_file)?;
-
-    // Test dds is saving correctly
-    #[cfg(feature="test-dds")]
-    for face_idx in 0..6 {
-        for level in 0..cubemap_levels {
-            let level_side = cubemap_side >> level;
-            let face = image_data_to_u16(dds.face(face_idx).unwrap().mipmap(level as usize).unwrap().data(), format);
-            let img: ImageBuffer<Rgb<u16>, _> = ImageBuffer::from_vec(level_side, level_side, face).unwrap();
-            img.save(format!("{output_file}_face{}_level{}.png", face_idx, level)).unwrap();
-        }
-    }
-
-    Ok(())
-}
-
 // Bakes the IBL radiance map from an environment map. The input environment map and the output
 // radiance map are cubemaps
 async fn radiance(
@@ -1006,7 +666,7 @@ async fn radiance(
     for mip_level in 0..max_mip {
         // TODO: doing all the cycles in one command encoder hangs the OS and outputs black
         let level_side = cubemap_side >> mip_level;
-        println!("Processing radiance level {mip_level} side: {}", level_side);
+        log::trace!("Processing radiance level {mip_level} side: {}", level_side);
 
         // A command encoder executes one or many pipelines.
         // It is to WebGPU what a command buffer is to Vulkan.
@@ -1195,7 +855,7 @@ async fn irradiance(
         ..Default::default()
     });
 
-    println!("Processing irradiance");
+    log::trace!("Processing irradiance");
 
     // A command encoder executes one or many pipelines.
     // It is to WebGPU what a command buffer is to Vulkan.
@@ -1318,7 +978,7 @@ async fn ggx_lut(
         entry_point: "compute_lut",
     });
 
-    println!("Processing lut");
+    log::trace!("Processing lut");
 
     // A command encoder executes one or many pipelines.
     // It is to WebGPU what a command buffer is to Vulkan.
@@ -1467,7 +1127,7 @@ async fn main() -> Result<()> {
     let adapter = if let Some(adapter) = adapter {
         adapter
     }else{
-        println!("Couldn't find any DiscreteGpu trying to use default HighPerformance adapter");
+        log::trace!("Couldn't find any DiscreteGpu trying to use default HighPerformance adapter");
         instance
             .request_adapter(&wgpu::RequestAdapterOptions{
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -1479,7 +1139,7 @@ async fn main() -> Result<()> {
             .context("Requesting adapter")?
     };
 
-    println!("Using adapter: {:?}", adapter.get_info());
+    log::trace!("Using adapter: {:?}", adapter.get_info());
 
     // `request_device` instantiates the feature specific connection to the GPU, defining some parameters,
     //  `features` being the available features.

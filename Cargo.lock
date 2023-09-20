@@ -1579,6 +1579,7 @@ dependencies = [
  "image",
  "libhdr",
  "libktx-rs-sys",
+ "log",
  "num-traits",
  "regex",
  "wgpu",
