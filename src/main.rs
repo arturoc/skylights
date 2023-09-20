@@ -1555,6 +1555,8 @@ async fn main() -> Result<()> {
 
     // Convert equirectangular to cubemap
     let env_map = equirectangular_to_cubemap(&device, &queue, &env_map, cubemap_side, pixel_format).await.unwrap();
+    // generate mipmaps for the environment map
+    let env_map = generate_mipmaps(&device, &queue, &env_map);
 
     // Download environment map data
     let env_map_data = download_cubemap(&device, &queue, &env_map).await.unwrap();
@@ -1571,29 +1573,15 @@ async fn main() -> Result<()> {
             }
         }
 
-        "dds" => {
-            let ty = match pixel_format {
-                wgpu::TextureFormat::Rgba32Float => dds::Type::Float,
-                wgpu::TextureFormat::Rgba16Float => todo!(),
-                _ => todo!()
-            };
+        "dds" => write_cubemap_to_dds(&env_map_data, pixel_format, cubemap_side, env_map.mip_level_count(), "skybox.dds")?,
 
-            // Save as cubemap dds
-            dds::Builder::new(cubemap_side as usize, cubemap_side as usize, dds::Format::RGBA, ty)
-                .is_cubemap_allfaces()
-                .create(env_map_data)?
-                .save("skybox.dds")?;
-        }
+        "ktx1" => write_cubemap_to_ktx1(&env_map_data, pixel_format, cubemap_side, env_map.mip_level_count(), "skybox.ktx"),
 
-        "ktx1" => write_cubemap_to_ktx1(&env_map_data, pixel_format, cubemap_side, 1, "skybox.ktx"),
-
-        "ktx2" => write_cubemap_to_ktx2(&env_map_data, pixel_format, cubemap_side, 1, "skybox.ktx"),
+        "ktx2" => write_cubemap_to_ktx2(&env_map_data, pixel_format, cubemap_side, env_map.mip_level_count(), "skybox.ktx"),
 
         _ => unreachable!()
     }
 
-    // generate mipmaps for the environment map
-    let env_map = generate_mipmaps(&device, &queue, &env_map);
 
     // Calculate radiance
     let radiance = radiance(&device, &queue, &env_map, cubemap_side, &bake_parameters).await.unwrap();
