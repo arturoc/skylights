@@ -21,6 +21,9 @@ libhdr = {version = "0.1.1", registry="rin-rs"}
 dds = {version = "0.2", registry="rin-rs"}
 libktx-rs-sys = "0.3.3+v4.0.0"
 regex = "1.9.5"
+half = { version = "2.3.1", features = ["bytemuck", "num-traits"] }
+num-traits = "0.2.16"
+anyhow = { version = "1.0.75", features = ["backtrace"] }
 
 
 
@@ -31,3 +34,9 @@ debug = true
 codegen-units = 256
 incremental = true
 lto = false
+
+
+[features]
+test-dds = []
+test-ktx = []
+# default = ["test-ktx"]
