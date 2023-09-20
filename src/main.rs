@@ -2,7 +2,7 @@ use std::{borrow::Cow, error::Error, mem::size_of, ptr, ffi::CString, cell::Once
 use bytemuck::{Pod, Zeroable};
 use image::{DynamicImage, ImageBuffer, Rgb};
 use libktx_rs_sys::{ktxTexture2_Create, ktxTextureCreateStorageEnum_KTX_TEXTURE_CREATE_ALLOC_STORAGE, ktxTexture1_Create, ktxTexture};
-use wgpu::{util::{DeviceExt, BufferInitDescriptor}, TextureDescriptor, TextureFormat, TextureUsages, Origin3d, ImageDataLayout, ImageCopyTexture, BindGroup};
+use wgpu::{util::{DeviceExt, BufferInitDescriptor}, TextureDescriptor, TextureFormat, TextureUsages, Origin3d, ImageDataLayout, ImageCopyTexture};
 use async_std::{prelude::*, fs::File, task::spawn_blocking, path::Path};
 
 static RE: &str = r"const[ \t]+([A-Z][A-Z0-9_]*)[ \t]*(:)?[ \t]*([^ \t=]+)?[ \t]*=[ \t]*([^ \t;]*);";
