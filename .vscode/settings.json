@@ -1,0 +1,12 @@
+{
+    "cSpell.words": [
+        "bytemuck",
+        "cubemap",
+        "equirectangular",
+        "libktx",
+        "Vulkan",
+        "wgpu",
+        "WGSL",
+        "Zeroable"
+    ]
+}
