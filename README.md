@@ -26,4 +26,15 @@ Options:
   -h, --help              Print help
 ```
 
+To install:
+
+- Install rust following the official Rust install guide: https://www.rust-lang.org/tools/install
+- Restart the terminal so the search paths are updated
+- Install the latest cmake and a c++ compiler, in windows visual studio in linux gcc or clang
+- Use cargo to install the tool:
+```
+cargo install skylights
+```
+- Now skylights should be in the path and can be called from anywhere
+
 Skylights is sponsored by [novorender](https://novorender.com/)
