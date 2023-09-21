@@ -17,8 +17,8 @@ futures = "0.3.28"
 futures-intrusive = "0.5.0"
 image = "0.24.7"
 wgpu = "0.17.0"
-libhdr = {version = "0.1.1", registry="rin-rs"}
-dds = {version = "0.2", registry="rin-rs"}
+libhdr = {version = "1"}
+libdds = {version = "1"}
 libktx-rs-sys = "0.3.3+v4.0.0"
 regex = "1.9.5"
 half = { version = "2.3.1", features = ["bytemuck", "num-traits"] }

@@ -541,12 +541,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dds"
-version = "0.2.1"
-source = "registry+ssh://bitbucket.org/rin-rs/rin-registry.git"
-checksum = "6d75261fc4ec9f9d4d8946b876588b7f1a1f780a021ba83d2ee1540da0234f7b"
-
-[[package]]
 name = "either"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1073,10 +1067,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9cdc71e17332e86d2e1d38c1f99edcb6288ee11b815fb1a4b049eaa2114d369b"
 
 [[package]]
+name = "libdds"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6ddba486c5f5772fa24c72b42f9f7abc53f21c8b819227f86b1a3fc7420b393"
+
+[[package]]
 name = "libhdr"
-version = "0.1.2"
-source = "registry+ssh://bitbucket.org/rin-rs/rin-registry.git"
-checksum = "f23bd9e2788ff5418911f542188484393cc38c11462b2a4980eaf45d2a08ff7d"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab9172fa2008978082a9b1aa92470bae1815d356ed867bb94be73fc2fc05cef6"
 
 [[package]]
 name = "libktx-rs-sys"
@@ -1571,12 +1571,12 @@ dependencies = [
  "async-std",
  "bytemuck",
  "clap",
- "dds",
  "env_logger",
  "futures",
  "futures-intrusive",
  "half",
  "image",
+ "libdds",
  "libhdr",
  "libktx-rs-sys",
  "log",
