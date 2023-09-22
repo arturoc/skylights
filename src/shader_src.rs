@@ -133,7 +133,6 @@ pub fn set_texture_format(shader_src: &str, texture_formats: &[(&str, wgpu::Text
                     .find(|(name, _)| *name == texture_name)
                     .map(|(_, format)| format.to_wgsl_texture_str());
                 if let Some(new_ty) = new_ty {
-                    let ty = &captures[2];
                     let new_line = format!("var {texture_name}: texture_cube<{new_ty}>;");
                     new_shader_src += &new_line;
                 }else{

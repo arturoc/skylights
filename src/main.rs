@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use bytemuck::{Pod, Zeroable};
 use half::f16;
 use image::{DynamicImage, ImageBuffer, Rgb};
-use libktx_rs_sys::{ktxTexture2_Create, ktxTextureCreateStorageEnum_KTX_TEXTURE_CREATE_ALLOC_STORAGE, ktxTexture1_Create, ktxTexture};
 use wgpu::{util::{DeviceExt, BufferInitDescriptor}, TextureDescriptor, TextureFormat, TextureUsages, Origin3d, ImageDataLayout, ImageCopyTexture};
 use async_std::{prelude::*, fs::File, task::spawn_blocking, path::Path};
 use anyhow::{Context, Result};
