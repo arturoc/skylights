@@ -28,6 +28,12 @@ Options:
   -h, --help             Print help
 ```
 
+## To use from Releases (Windows only)
+
+- Download the latest release .exe from https://github.com/arturoc/skylights/releases
+- `skylights --help` shows a help screen.
+- If the application shows an error about a missing dll you need the Visual Studio 2015, 2017, 2019, and 2022 redistributable from this page: https://learn.microsoft.com/en-US/cpp/windows/latest-supported-vc-redist?view=msvc-170#visual-studio-2015-2017-2019-and-2022 Or directly download the file from: https://aka.ms/vs/17/release/vc_redist.x64.exe Once installed skylights will work without problem.
+
 ## To install:
 
 - Install rust following the official Rust install guide: https://www.rust-lang.org/tools/install
