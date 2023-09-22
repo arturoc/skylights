@@ -1068,9 +1068,12 @@ checksum = "9cdc71e17332e86d2e1d38c1f99edcb6288ee11b815fb1a4b049eaa2114d369b"
 
 [[package]]
 name = "libdds"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6ddba486c5f5772fa24c72b42f9f7abc53f21c8b819227f86b1a3fc7420b393"
+checksum = "da7b58847eb09052890c23c8e32c325e0853c15dae03587071777884c9a09111"
+dependencies = [
+ "bitflags 2.4.0",
+]
 
 [[package]]
 name = "libhdr"

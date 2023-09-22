@@ -174,8 +174,8 @@ pub fn write_cubemap_to_dds(cubemap_data: &[u8], format: wgpu::TextureFormat, cu
     }
 
     let ty = match format {
-        wgpu::TextureFormat::Rgba32Float => dds::Type::Float,
-        wgpu::TextureFormat::Rgba16Float => todo!(),
+        wgpu::TextureFormat::Rgba32Float => dds::Type::Float32,
+        wgpu::TextureFormat::Rgba16Float => dds::Type::Float16,
         _ => todo!()
     };
 

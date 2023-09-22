@@ -18,7 +18,7 @@ futures-intrusive = "0.5.0"
 image = "0.24.7"
 wgpu = "0.17.0"
 libhdr = {version = "1"}
-libdds = {version = "1"}
+libdds = {version = "1.1"}
 libktx-rs-sys = "0.3.3+v4.0.0"
 regex = "1.9.5"
 half = { version = "2.3.1", features = ["bytemuck", "num-traits"] }
@@ -41,3 +41,7 @@ lto = false
 test-dds = []
 test-ktx = []
 # default = ["test-ktx"]
+
+# [patch.crates-io]
+# libktx-rs-sys = {path = "../libktx-rs/libktx-rs-sys"}
+# libdds = { path = "../dds-rs" }
