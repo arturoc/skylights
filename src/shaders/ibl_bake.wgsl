@@ -37,6 +37,7 @@ const BRIGHTNESS_CORRECTION: f32 = 1.;
 const SATURATION_CORRECTION: f32 = 1.;
 const HUE_CORRECTION = 0.;
 const ROOT: vec3<f32> = vec3(0.57735, 0.57735, 0.57735);
+const FLIP_Y = false;
 
 const LAMBERT = 0;
 const GGX = 1;
@@ -114,8 +115,13 @@ fn signed_uv_face_to_cubemap_xyz(uv: vec2f, face_idx: u32) -> vec3f{
 }
 
 fn uv_face_to_cubemap_xyz(uv: vec2<f32>, face_idx: u32) -> vec3f {
-	let nuv = vec2(uv.x, 1. - uv.y) * 2.0 - vec2(1.0);
-	return signed_uv_face_to_cubemap_xyz(nuv, face_idx);
+	if FLIP_Y {
+		let nuv = vec2(uv.x, 1. - uv.y) * 2.0 - vec2(1.0);
+		return signed_uv_face_to_cubemap_xyz(nuv, face_idx);
+	}else{
+		let nuv = uv * 2.0 - vec2(1.0);
+		return signed_uv_face_to_cubemap_xyz(nuv, face_idx);
+	}
 }
 
 fn radicalInverse_VdC(bits: u32) -> f32 {

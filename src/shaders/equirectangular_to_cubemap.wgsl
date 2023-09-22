@@ -11,6 +11,7 @@ const INV_ATAN: vec2<f32> = vec2(0.1591, 0.3183);
 const CP_UDIR = 0u;
 const CP_VDIR = 1u;
 const CP_FACEAXIS = 2u;
+const FLIP_Y = false;
 
 fn sample_spherical_map(v: vec3f) -> vec2f
 {
@@ -93,8 +94,13 @@ fn signed_uv_face_to_cubemap_xyz(uv: vec2f, face_idx: u32) -> vec3f{
 }
 
 fn uv_face_to_cubemap_xyz(uv: vec2<f32>, face_idx: u32) -> vec3f {
-	let nuv = vec2(uv.x, 1. - uv.y) * 2.0 - vec2(1.0);
-	return signed_uv_face_to_cubemap_xyz(nuv, face_idx);
+	if FLIP_Y {
+		let nuv = vec2(uv.x, 1. - uv.y) * 2.0 - vec2(1.0);
+		return signed_uv_face_to_cubemap_xyz(nuv, face_idx);
+	}else{
+		let nuv = uv * 2.0 - vec2(1.0);
+		return signed_uv_face_to_cubemap_xyz(nuv, face_idx);
+	}
 }
 
 @compute

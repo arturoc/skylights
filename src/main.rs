@@ -18,10 +18,11 @@ struct BakeParameters {
     brightness_correction: f32,
     saturation_correction: f32,
     hue_correction: f32,
+    flip_y: bool,
 }
 
 impl BakeParameters {
-    fn to_name_value(&self) -> [(&str, Cow<str>); 6] {
+    fn to_name_value(&self) -> [(&str, Cow<str>); 7] {
         [
             ("NUM_SAMPLES", Cow::Owned(format!("{}u", self.num_samples))),
             ("STRENGTH", Cow::Owned(format!("{:?}", self.strength))),
@@ -29,6 +30,7 @@ impl BakeParameters {
             ("BRIGHTNESS_CORRECTION", Cow::Owned(format!("{:?}", self.brightness_correction))),
             ("SATURATION_CORRECTION", Cow::Owned(format!("{:?}", self.saturation_correction))),
             ("HUE_CORRECTION", Cow::Owned(format!("{:?}", self.hue_correction))),
+            ("FLIP_Y", self.flip_y.to_string().into())
         ]
     }
 }
@@ -40,12 +42,16 @@ async fn equirectangular_to_cubemap(
     env_map: &DynamicImage,
     cubemap_side: u32,
     pixel_format: wgpu::TextureFormat,
+    flip_y: bool,
 ) -> Option<wgpu::Texture> {
     // TODO: check if input is different
     let env_map_format = wgpu::TextureFormat::Rgba32Float;
 
     static EQUI_TO_CUBEMAP_SRC: &str = include_str!("shaders/equirectangular_to_cubemap.wgsl");
-    let equi_to_cubemap_src = set_texture_format(EQUI_TO_CUBEMAP_SRC, &[
+    let equi_to_cubemap_src = set_constants(EQUI_TO_CUBEMAP_SRC, &[
+        ("FLIP_Y", flip_y.to_string().into())
+    ]);
+    let equi_to_cubemap_src = set_texture_format(&equi_to_cubemap_src, &[
         ("equirectangular", env_map_format),
         ("cubemap_faces", pixel_format),
     ]);
@@ -576,8 +582,7 @@ async fn radiance(
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: env_map.format(),
-            usage: wgpu::TextureUsages::STORAGE_BINDING
-                | TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC,
             view_formats: &[]
         },
     );
@@ -1106,6 +1111,13 @@ async fn main() -> Result<()> {
                 .short('u')
                 .help("Corrects the hue of the final color in degrees. [possible values: 0..360]")
         )
+        .arg(
+            clap::Arg::new("flip-y")
+                .default_value("false")
+                .value_parser(clap::value_parser!(bool))
+                .short('y')
+                .help("Flips the cubemaps. Needed depending on the coordinate system of the used API")
+        )
         .arg(clap::arg!(-l --lut "Computes GGX LUT"))
         .get_matches();
 
@@ -1187,6 +1199,7 @@ async fn main() -> Result<()> {
         brightness_correction: *args.get_one("brightness").unwrap(),
         saturation_correction: *args.get_one("saturation").unwrap(),
         hue_correction: *args.get_one("hue").unwrap(),
+        flip_y: *args.get_one("flip-y").unwrap(),
     };
 
 
@@ -1213,7 +1226,15 @@ async fn main() -> Result<()> {
         .unwrap() as usize;
 
     // Convert equirectangular to cubemap
-    let env_map = equirectangular_to_cubemap(&device, &queue, &env_map, cubemap_side, pixel_format).await.unwrap();
+    let env_map = equirectangular_to_cubemap(
+        &device,
+        &queue,
+        &env_map,
+        cubemap_side,
+        pixel_format,
+        bake_parameters.flip_y
+    ).await.unwrap();
+
     // generate mipmaps for the environment map
     let env_map = generate_mipmaps(&device, &queue, &env_map);
 
