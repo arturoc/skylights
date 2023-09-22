@@ -1222,13 +1222,19 @@ async fn main() -> Result<()> {
     match encoding {
         "png" => {
             // Save as individual images per face
-            for (idx, face) in env_map_data
-                .chunks(cubemap_side as usize * cubemap_side as usize * bytes_per_pixel)
-                .enumerate()
-            {
-                let face_u16 = image_data_to_u16(&face, pixel_format);
-                let img: ImageBuffer<Rgb<u16>, _> = ImageBuffer::from_vec(cubemap_side, cubemap_side, face_u16).unwrap();
-                img.save(format!("face{}.png", idx)).unwrap();
+            let mut prev_end = 0;
+            for level in 0..env_map.mip_level_count() {
+                let level_side = (cubemap_side >> level) as usize;
+                for (idx, face) in env_map_data[prev_end..]
+                    .chunks(level_side * level_side * bytes_per_pixel)
+                    .enumerate()
+                    .take(6)
+                {
+                    let face_u16 = image_data_to_u16(&face, pixel_format);
+                    let img: ImageBuffer<Rgb<u16>, _> = ImageBuffer::from_vec(level_side as u32, level_side as u32, face_u16).unwrap();
+                    img.save(format!("skybox_face{}_level{}.png", idx, level)).unwrap();
+                }
+                prev_end += level_side * level_side * bytes_per_pixel * 6;
             }
         }
 
