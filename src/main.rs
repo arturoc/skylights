@@ -1106,7 +1106,7 @@ async fn main() -> Result<()> {
                 .short('u')
                 .help("Corrects the hue of the final color in degrees. [possible values: 0..360]")
         )
-        .arg(clap::arg!(--lut -l "Computes GGX LUT"))
+        .arg(clap::arg!(-l --lut "Computes GGX LUT"))
         .get_matches();
 
     let input_image: Option<&String> = args.get_one("input-image");
